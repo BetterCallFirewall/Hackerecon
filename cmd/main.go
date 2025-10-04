@@ -6,6 +6,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/BetterCallFirewall/Hackerecon/internal/cert"
 	"github.com/BetterCallFirewall/Hackerecon/internal/config"
 	"github.com/BetterCallFirewall/Hackerecon/internal/proxy"
 	"github.com/BetterCallFirewall/Hackerecon/internal/storage"
@@ -21,8 +22,14 @@ func main() {
 	// Инициализируем хранилище в памяти
 	store := storage.NewMemoryStorage()
 
+	// Инициализируем менеджер для работы с сертификатами
+	certManager, err := cert.NewCertManager(cfg)
+	if err != nil {
+		log.Fatalf("Failed to create cert manager: %v", err)
+	}
+
 	// Запускаем прокси сервер
-	proxyServer := proxy.NewServer(cfg, store)
+	proxyServer := proxy.NewServer(cfg, store, certManager)
 	go func() {
 		log.Printf("Starting proxy server on %s", cfg.Proxy.ListenAddr)
 		if err := proxyServer.Start(); err != nil {

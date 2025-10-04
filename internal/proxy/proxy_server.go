@@ -12,32 +12,35 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/BetterCallFirewall/Hackerecon/internal/cert"
 	"github.com/BetterCallFirewall/Hackerecon/internal/config"
-	"github.com/BetterCallFirewall/Hackerecon/internal/storage"
+	proxymodels "github.com/BetterCallFirewall/Hackerecon/internal/models/proxy"
 )
 
 type Broadcaster interface {
 	Broadcast(data interface{})
 }
+
+type repoI interface {
+	StoreRequest(req *proxymodels.RequestData)
+}
+
+type certManagerI interface {
+	GetCAPath() string
+	GetCertificate(host string) (*tls.Certificate, error)
+}
 type Server struct {
 	config      *config.Config
-	storage     *storage.MemoryStorage
+	storage     repoI
 	server      *http.Server
-	certManager *cert.CertManager
+	certManager certManagerI
 	broadcaster Broadcaster
 }
 
-func NewServer(cfg *config.Config, store *storage.MemoryStorage) *Server {
-	certMgr, err := cert.NewCertManager()
-	if err != nil {
-		panic(err)
-	}
-
+func NewServer(cfg *config.Config, store repoI, certManager certManagerI) *Server {
 	return &Server{
 		config:      cfg,
 		storage:     store,
-		certManager: certMgr,
+		certManager: certManager,
 	}
 }
 
@@ -113,11 +116,11 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	s.copyResponse(w, response)
 }
 
-func (s *Server) captureRequest(r *http.Request, targetURL string) *storage.RequestData {
+func (s *Server) captureRequest(r *http.Request, targetURL string) *proxymodels.RequestData {
 	body, _ := io.ReadAll(r.Body)
 	r.Body = io.NopCloser(strings.NewReader(string(body)))
 
-	return &storage.RequestData{
+	return &proxymodels.RequestData{
 		ID:        uuid.New().String(),
 		URL:       targetURL,
 		Method:    r.Method,
@@ -127,11 +130,11 @@ func (s *Server) captureRequest(r *http.Request, targetURL string) *storage.Requ
 	}
 }
 
-func (s *Server) captureResponse(resp *http.Response) *storage.ResponseData {
+func (s *Server) captureResponse(resp *http.Response) *proxymodels.ResponseData {
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body = io.NopCloser(strings.NewReader(string(body)))
 
-	return &storage.ResponseData{
+	return &proxymodels.ResponseData{
 		Status:  resp.StatusCode,
 		Headers: resp.Header,
 		Body:    string(body),

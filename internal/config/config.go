@@ -9,6 +9,7 @@ import (
 type Config struct {
 	Proxy ProxyConfig `yaml:"proxy"`
 	Web   WebConfig   `yaml:"web"`
+	Cert  CertConfig  `yaml:"cert"`
 }
 
 type ProxyConfig struct {
@@ -17,6 +18,10 @@ type ProxyConfig struct {
 
 type WebConfig struct {
 	ListenAddr string `yaml:"listen_addr"`
+}
+
+type CertConfig struct {
+	CertFile string `yaml:"cert_file"`
 }
 
 func Load() (*Config, error) {
@@ -30,6 +35,9 @@ func Load() (*Config, error) {
 		},
 		Web: WebConfig{
 			ListenAddr: os.Getenv("PROXY_LISTEN_ADDR"),
+		},
+		Cert: CertConfig{
+			CertFile: os.Getenv("PROXY_CERT_FILE"),
 		},
 	}, nil
 }

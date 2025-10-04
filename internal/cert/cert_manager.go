@@ -13,9 +13,11 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/BetterCallFirewall/Hackerecon/internal/config"
 )
 
-type CertManager struct {
+type Manager struct {
 	ca     *x509.Certificate
 	caKey  *rsa.PrivateKey
 	certs  map[string]*tls.Certificate
@@ -23,10 +25,10 @@ type CertManager struct {
 	caFile string
 }
 
-func NewCertManager() (*CertManager, error) {
-	cm := &CertManager{
+func NewCertManager(cfg *config.Config) (*Manager, error) {
+	cm := &Manager{
 		certs:  make(map[string]*tls.Certificate),
-		caFile: filepath.Join(os.Getenv("HOME"), ".hackerecon", "ca.pem"),
+		caFile: cfg.Cert.CertFile,
 	}
 
 	// Пытаемся загрузить существующий CA
@@ -40,7 +42,7 @@ func NewCertManager() (*CertManager, error) {
 	return cm, nil
 }
 
-func (cm *CertManager) generateCA() error {
+func (cm *Manager) generateCA() error {
 	// Генерируем приватный ключ
 	caKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -85,10 +87,12 @@ func (cm *CertManager) generateCA() error {
 	}
 	defer keyOut.Close()
 
-	pem.Encode(keyOut, &pem.Block{
-		Type:  "RSA PRIVATE KEY",
-		Bytes: x509.MarshalPKCS1PrivateKey(caKey),
-	})
+	pem.Encode(
+		keyOut, &pem.Block{
+			Type:  "RSA PRIVATE KEY",
+			Bytes: x509.MarshalPKCS1PrivateKey(caKey),
+		},
+	)
 
 	cm.ca = ca
 	cm.caKey = caKey
@@ -96,7 +100,7 @@ func (cm *CertManager) generateCA() error {
 	return nil
 }
 
-func (cm *CertManager) loadCA() error {
+func (cm *Manager) loadCA() error {
 	// Загружаем сертификат
 	certPEM, err := os.ReadFile(cm.caFile)
 	if err != nil {
@@ -135,7 +139,7 @@ func (cm *CertManager) loadCA() error {
 	return nil
 }
 
-func (cm *CertManager) GetCertificate(host string) (*tls.Certificate, error) {
+func (cm *Manager) GetCertificate(host string) (*tls.Certificate, error) {
 	// Проверяем кеш
 	cm.mu.RLock()
 	if cert, ok := cm.certs[host]; ok {
@@ -198,6 +202,6 @@ func (cm *CertManager) GetCertificate(host string) (*tls.Certificate, error) {
 	return cert, nil
 }
 
-func (cm *CertManager) GetCAPath() string {
+func (cm *Manager) GetCAPath() string {
 	return cm.caFile
 }
