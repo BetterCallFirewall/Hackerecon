@@ -40,7 +40,7 @@ func Load() (*Config, error) {
 			ListenAddr: os.Getenv("PROXY_LISTEN_ADDR"),
 		},
 		Web: WebConfig{
-			ListenAddr: os.Getenv("PROXY_LISTEN_ADDR"),
+			ListenAddr: os.Getenv("WEB_LISTEN_ADDR"),
 		},
 		Cert: CertConfig{
 			CertFile: os.Getenv("PROXY_CERT_FILE"),
