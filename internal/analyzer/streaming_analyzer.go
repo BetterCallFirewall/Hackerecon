@@ -1,4 +1,3 @@
-// internal/analyzer/streaming.go
 package analyzer
 
 import (
@@ -11,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/BetterCallFirewall/Hackerecon/internal/storage"
+	llmmodel "github.com/BetterCallFirewall/Hackerecon/internal/models/llm"
 )
 
 type StreamingAnalyzer struct {
@@ -54,7 +53,9 @@ func NewStreamingAnalyzer(config *StreamingConfig) *StreamingAnalyzer {
 	}
 }
 
-func (sa *StreamingAnalyzer) AnalyzeStreaming(ctx context.Context, requestID string, prompt string) (<-chan *PartialResult, error) {
+func (sa *StreamingAnalyzer) AnalyzeStreaming(
+	ctx context.Context, requestID string, prompt string,
+) (<-chan *PartialResult, error) {
 	resultChan := make(chan *PartialResult, 10)
 
 	go func() {
@@ -72,7 +73,9 @@ func (sa *StreamingAnalyzer) AnalyzeStreaming(ctx context.Context, requestID str
 	return resultChan, nil
 }
 
-func (sa *StreamingAnalyzer) streamAnalysis(ctx context.Context, requestID string, prompt string, resultChan chan<- *PartialResult) error {
+func (sa *StreamingAnalyzer) streamAnalysis(
+	ctx context.Context, requestID string, prompt string, resultChan chan<- *PartialResult,
+) error {
 	reqBody := OllamaStreamRequest{
 		Model:  sa.config.Model,
 		Prompt: prompt,
@@ -153,27 +156,27 @@ func (sa *StreamingAnalyzer) streamAnalysis(ctx context.Context, requestID strin
 	return scanner.Err()
 }
 
-func (sa *StreamingAnalyzer) parseAnalysis(response string) (*storage.AnalysisResult, error) {
+func (sa *StreamingAnalyzer) parseAnalysis(response string) (*llmmodel.AnalysisResult, error) {
 	// Ищем JSON в ответе LLM
 	start := strings.Index(response, "{")
 	end := strings.LastIndex(response, "}")
 
 	if start == -1 || end == -1 || start >= end {
-		return &storage.AnalysisResult{
+		return &llmmodel.AnalysisResult{
 			VulnerabilitiesFound: false,
-			OverallRisk:         "Low",
-			PentesterActions:    []string{"Could not parse LLM response: " + response[:100]},
+			OverallRisk:          "Low",
+			PentesterActions:     []string{"Could not parse LLM response: " + response[:100]},
 		}, nil
 	}
 
 	jsonStr := response[start : end+1]
-	var result storage.AnalysisResult
+	var result llmmodel.AnalysisResult
 
 	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
-		return &storage.AnalysisResult{
+		return &llmmodel.AnalysisResult{
 			VulnerabilitiesFound: false,
-			OverallRisk:         "Low",
-			PentesterActions:    []string{"JSON parse error: " + err.Error()},
+			OverallRisk:          "Low",
+			PentesterActions:     []string{"JSON parse error: " + err.Error()},
 		}, nil
 	}
 
