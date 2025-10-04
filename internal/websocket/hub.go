@@ -1,4 +1,3 @@
-// internal/websocket/hub.go
 package websocket
 
 import (
@@ -13,7 +12,7 @@ import (
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
-		return true // В продакшене нужна proper проверка
+		return true // Разрешаем все origins для разработки
 	},
 }
 
@@ -32,15 +31,15 @@ type Client struct {
 }
 
 type Message struct {
-	Type    string      `json:"type"`
-	Data    interface{} `json:"data"`
-	Timestamp int64     `json:"timestamp"`
+	Type      string      `json:"type"`
+	Data      interface{} `json:"data"`
+	Timestamp int64       `json:"timestamp"`
 }
 
 func NewHub() *Hub {
 	return &Hub{
 		clients:    make(map[*Client]bool),
-		broadcast:  make(chan []byte),
+		broadcast:  make(chan []byte, 256),
 		register:   make(chan *Client),
 		unregister: make(chan *Client),
 	}
@@ -53,7 +52,7 @@ func (h *Hub) Run() {
 			h.mutex.Lock()
 			h.clients[client] = true
 			h.mutex.Unlock()
-			log.Printf("Client connected, total: %d", len(h.clients))
+			log.Printf("WebSocket client connected, total: %d", len(h.clients))
 
 		case client := <-h.unregister:
 			h.mutex.Lock()
@@ -62,7 +61,7 @@ func (h *Hub) Run() {
 				close(client.send)
 			}
 			h.mutex.Unlock()
-			log.Printf("Client disconnected, total: %d", len(h.clients))
+			log.Printf("WebSocket client disconnected, total: %d", len(h.clients))
 
 		case message := <-h.broadcast:
 			h.mutex.RLock()
@@ -79,21 +78,21 @@ func (h *Hub) Run() {
 	}
 }
 
-func (h *Hub) BroadcastAnalysis(analysis interface{}) {
+func (h *Hub) Broadcast(data interface{}) {
 	msg := Message{
-		Type:      "analysis_result",
-		Data:      analysis,
+		Type:      "request",
+		Data:      data,
 		Timestamp: time.Now().Unix(),
 	}
 
-	data, err := json.Marshal(msg)
+	jsonData, err := json.Marshal(msg)
 	if err != nil {
-		log.Printf("Failed to marshal analysis: %v", err)
+		log.Printf("Failed to marshal message: %v", err)
 		return
 	}
 
 	select {
-	case h.broadcast <- data:
+	case h.broadcast <- jsonData:
 	default:
 		log.Println("Broadcast channel full, skipping message")
 	}

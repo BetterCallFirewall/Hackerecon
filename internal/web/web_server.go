@@ -39,8 +39,11 @@ func (s *Server) Start() error {
 	// WebSocket endpoint
 	mux.HandleFunc("/ws", s.hub.ServeWS)
 
-	// Static files (для фронтенда)
-	mux.Handle("/", http.FileServer(http.Dir("./web/static")))
+	// Health check
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok"}`))
+	})
 
 	s.server = &http.Server{
 		Addr:    s.config.Web.ListenAddr,
@@ -102,6 +105,6 @@ func (s *Server) enableCORS(next http.Handler) http.Handler {
 	})
 }
 
-func (s *Server) BroadcastAnalysis(analysis interface{}) {
-	s.hub.BroadcastAnalysis(analysis)
+func (s *Server) Broadcast(data interface{}) {
+	s.hub.Broadcast(data)
 }

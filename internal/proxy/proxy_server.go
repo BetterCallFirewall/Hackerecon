@@ -21,6 +21,11 @@ type Server struct {
 	storage     *storage.MemoryStorage
 	server      *http.Server
 	certManager *cert.CertManager
+	broadcaster Broadcaster
+}
+
+type Broadcaster interface {
+	Broadcast(data interface{})
 }
 
 func NewServer(cfg *config.Config, store *storage.MemoryStorage) *Server {
@@ -34,6 +39,10 @@ func NewServer(cfg *config.Config, store *storage.MemoryStorage) *Server {
 		storage:     store,
 		certManager: certMgr,
 	}
+}
+
+func (s *Server) SetBroadcaster(b Broadcaster) {
+	s.broadcaster = b
 }
 
 func (s *Server) Start() error {
@@ -94,6 +103,11 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// Сохраняем запрос с ответом
 	requestData.Response = responseData
 	s.storage.StoreRequest(requestData)
+
+	// Отправляем в WebSocket
+	if s.broadcaster != nil {
+		s.broadcaster.Broadcast(requestData)
+	}
 
 	// Возвращаем ответ клиенту
 	s.copyResponse(w, response)
@@ -253,6 +267,11 @@ func (s *Server) handleHTTPSRequest(clientConn net.Conn, req *http.Request) {
 	// Сохраняем
 	requestData.Response = responseData
 	s.storage.StoreRequest(requestData)
+
+	// Отправляем в WebSocket
+	if s.broadcaster != nil {
+		s.broadcaster.Broadcast(requestData)
+	}
 
 	// Отправляем ответ клиенту
 	response.Write(clientConn)
