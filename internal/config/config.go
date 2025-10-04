@@ -3,7 +3,7 @@ package config
 import (
 	"os"
 
-	"gopkg.in/yaml.v3"
+	"github.com/joho/godotenv"
 )
 
 type Config struct {
@@ -19,24 +19,17 @@ type WebConfig struct {
 	ListenAddr string `yaml:"listen_addr"`
 }
 
-func Load(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
+func Load() (*Config, error) {
+	err := godotenv.Load()
 	if err != nil {
 		return nil, err
 	}
-
-	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, err
-	}
-
-	// Значения по умолчанию
-	if cfg.Proxy.ListenAddr == "" {
-		cfg.Proxy.ListenAddr = ":8080"
-	}
-	if cfg.Web.ListenAddr == "" {
-		cfg.Web.ListenAddr = ":8081"
-	}
-
-	return &cfg, nil
+	return &Config{
+		Proxy: ProxyConfig{
+			ListenAddr: os.Getenv("PROXY_LISTEN_ADDR"),
+		},
+		Web: WebConfig{
+			ListenAddr: os.Getenv("PROXY_LISTEN_ADDR"),
+		},
+	}, nil
 }
