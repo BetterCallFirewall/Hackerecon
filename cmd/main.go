@@ -1,21 +1,10 @@
 package main
 
 import (
-	"context"
-	"fmt"
 	"log"
-	"os"
-	"os/signal"
-	"syscall"
 
-	"github.com/firebase/genkit/go/genkit"
-	"github.com/firebase/genkit/go/plugins/googlegenai"
-
-	"github.com/BetterCallFirewall/Hackerecon/internal/cert"
 	"github.com/BetterCallFirewall/Hackerecon/internal/config"
-	"github.com/BetterCallFirewall/Hackerecon/internal/proxy"
-	"github.com/BetterCallFirewall/Hackerecon/internal/storage"
-	"github.com/BetterCallFirewall/Hackerecon/internal/web"
+	"github.com/BetterCallFirewall/Hackerecon/internal/driven"
 )
 
 func main() {
@@ -26,9 +15,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
 	}
-
-	// Инициализируем хранилище в памяти
-	store := storage.NewMemoryStorage()
 
 	// Инициализируем менеджер для работы с сертификатами
 	certManager, err := cert.NewCertManager(cfg)

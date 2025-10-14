@@ -14,8 +14,12 @@ type Config struct {
 }
 
 type LLMConfig struct {
-	Model string `yaml:"model"`
-	URL   string `yaml:"url"`
+	Model    string `yaml:"model"`
+	URL      string `yaml:"url"`
+	Port     string `yaml:"port"`
+	BurpHost string `yaml:"burpHost"`
+	BurpPort string `yaml:"burpPort"`
+	ApiKey   string `yaml:"apiKey"`
 }
 
 type ProxyConfig struct {
