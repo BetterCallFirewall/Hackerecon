@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/BetterCallFirewall/Hackerecon/internal/models"
+	"github.com/BetterCallFirewall/Hackerecon/internal/websocket"
 	"github.com/PuerkitoBio/goquery"
 	"github.com/firebase/genkit/go/ai"
 	genkitcore "github.com/firebase/genkit/go/core"
@@ -26,6 +27,7 @@ var urlRegexes = []*regexp.Regexp{
 // GenkitSecurityAnalyzer анализатор с использованием Genkit
 type GenkitSecurityAnalyzer struct {
 	model             string
+	WsHub             *websocket.Hub
 	genkitApp         *genkit.Genkit
 	mutex             sync.RWMutex
 	reports           []models.VulnerabilityReport
@@ -169,7 +171,7 @@ func (analyzer *GenkitSecurityAnalyzer) AnalyzeHTTPTraffic(
 			req.URL.String(), result.RiskLevel, result.ConfidenceScore,
 		)
 		log.Printf("💡 AI Комментарий: %s", result.AIComment)
-
+		analyzer.WsHub.Broadcast(result)
 		for i, check := range result.SecurityChecklist {
 			log.Printf("✅ Чек %d: %s (Приоритет: %s)", i+1, check.CheckName, check.Priority)
 		}

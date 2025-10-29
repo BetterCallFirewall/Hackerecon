@@ -91,6 +91,7 @@ func (h *Hub) Broadcast(data interface{}) {
 
 func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
+	log.Printf("WebSocket upgrader connection established")
 	if err != nil {
 		log.Printf("WebSocket upgrade failed: %v", err)
 		return
@@ -100,7 +101,7 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request) {
 		isActive: true,
 		hub:      h,
 		conn:     conn,
-		send:     make(chan []byte, 256),
+		send:     make(chan []byte, 10000),
 	}
 
 	client.hub.register <- client
