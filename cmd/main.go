@@ -5,6 +5,7 @@ import (
 
 	"github.com/BetterCallFirewall/Hackerecon/internal/config"
 	"github.com/BetterCallFirewall/Hackerecon/internal/driven"
+	"github.com/BetterCallFirewall/Hackerecon/internal/websocket"
 )
 
 func main() {
@@ -13,7 +14,11 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	genkitProxy, err := driven.NewSecurityProxyWithGenkit(cfg.LLM)
+	wsHub := websocket.NewHub()
+
+	go wsHub.Run()
+
+	genkitProxy, err := driven.NewSecurityProxyWithGenkit(cfg.LLM, wsHub)
 	if err != nil {
 		log.Fatalf("Failed to initialize genkit proxy: %v", err)
 	}

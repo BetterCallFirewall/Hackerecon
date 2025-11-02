@@ -39,9 +39,12 @@ type GenkitSecurityAnalyzer struct {
 	contextMutex sync.RWMutex
 }
 
-func newGenkitSecurityAnalyzer(genkitApp *genkit.Genkit, model string) (*GenkitSecurityAnalyzer, error) {
+func newGenkitSecurityAnalyzer(genkitApp *genkit.Genkit, model string, wsHub *websocket.Hub) (
+	*GenkitSecurityAnalyzer, error,
+) {
 	analyzer := &GenkitSecurityAnalyzer{
 		model:          model,
+		WsHub:          wsHub,
 		genkitApp:      genkitApp,
 		reports:        make([]models.VulnerabilityReport, 0),
 		secretPatterns: createSecretRegexPatterns(),

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/BetterCallFirewall/Hackerecon/internal/config"
+	"github.com/BetterCallFirewall/Hackerecon/internal/websocket"
 	"github.com/firebase/genkit/go/genkit"
 	"github.com/firebase/genkit/go/plugins/googlegenai"
 )
@@ -26,7 +27,7 @@ type SecurityProxyWithGenkit struct {
 	fallbackMode    bool
 }
 
-func NewSecurityProxyWithGenkit(cfg config.LLMConfig) (*SecurityProxyWithGenkit, error) {
+func NewSecurityProxyWithGenkit(cfg config.LLMConfig, wsHub *websocket.Hub) (*SecurityProxyWithGenkit, error) {
 	ctx := context.Background()
 
 	// Инициализируем Genkit с плагинами
@@ -40,7 +41,7 @@ func NewSecurityProxyWithGenkit(cfg config.LLMConfig) (*SecurityProxyWithGenkit,
 		genkit.WithDefaultModel(cfg.Model),
 	)
 
-	analyzer, err := newGenkitSecurityAnalyzer(genkitApp, cfg.Model)
+	analyzer, err := newGenkitSecurityAnalyzer(genkitApp, cfg.Model, wsHub)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Analyzer: %w", err)
 	}
