@@ -119,7 +119,6 @@ func (analyzer *GenkitSecurityAnalyzer) performSecurityAnalysis(
 
 	// Устанавливаем timestamp и URL
 	result.Timestamp = time.Now()
-	result.URL = req.URL
 
 	// Дополняем результат извлеченными секретами
 	result.ExtractedSecrets = append(result.ExtractedSecrets, req.ExtractedData.APIKeys...)
@@ -130,7 +129,7 @@ func (analyzer *GenkitSecurityAnalyzer) performSecurityAnalysis(
 
 // AnalyzeHTTPTraffic анализирует HTTP трафик с помощью Genkit flows
 func (analyzer *GenkitSecurityAnalyzer) AnalyzeHTTPTraffic(
-	ctx context.Context, req *http.Request, reqBody, respBody, contentType string,
+	ctx context.Context, req *http.Request, resp *http.Response, reqBody, respBody, contentType string,
 ) (*models.VulnerabilityReport, error) {
 	startTime := time.Now()
 
@@ -159,17 +158,14 @@ func (analyzer *GenkitSecurityAnalyzer) AnalyzeHTTPTraffic(
 		return nil, fmt.Errorf("security analysis failed: %w", err)
 	}
 
-	analyzer.updateSiteContext(req.URL.Host, result)
+	analyzer.updateSiteContext(req.URL.Host, req.URL.String(), result)
 
 	// Создаем полный отчет
 	report := &models.VulnerabilityReport{
-		ID:               generateReportID(),
-		Timestamp:        time.Now(),
-		SourceProxy:      "Go-Genkit",
-		AnalysisResult:   *result,
-		ProcessingTime:   time.Since(startTime),
-		ModelUsed:        analyzer.model,
-		ValidationStatus: "pending",
+		ID:             generateReportID(),
+		Timestamp:      time.Now(),
+		AnalysisResult: *result,
+		ProcessingTime: time.Since(startTime),
 	}
 
 	// Сохраняем отчет
@@ -198,8 +194,22 @@ func (analyzer *GenkitSecurityAnalyzer) AnalyzeHTTPTraffic(
 			}
 		}
 
-		analyzer.WsHub.Broadcast(result)
 	}
+
+	dto := models.ReportDTO{
+		Report: *report,
+		RequestResponse: models.RequestResponseInfo{
+			URL:         req.URL.String(),
+			Method:      req.Method,
+			StatusCode:  resp.StatusCode,
+			ReqHeaders:  convertHeaders(req.Header),
+			RespHeaders: convertHeaders(resp.Header),
+			ReqBody:     truncateString(reqBody, 500),
+			RespBody:    truncateString(respBody, 500),
+		},
+	}
+
+	analyzer.WsHub.Broadcast(dto)
 
 	return report, nil
 }
@@ -247,7 +257,10 @@ func (analyzer *GenkitSecurityAnalyzer) prepareContentForLLM(content, contentTyp
 }
 
 // updateSiteContext обновляет контекст на основе ответа от LLM
-func (analyzer *GenkitSecurityAnalyzer) updateSiteContext(host string, llmResponse *models.SecurityAnalysisResponse) {
+func (analyzer *GenkitSecurityAnalyzer) updateSiteContext(
+	host string, url string,
+	llmResponse *models.SecurityAnalysisResponse,
+) {
 	analyzer.contextMutex.Lock()
 	defer analyzer.contextMutex.Unlock()
 
@@ -284,7 +297,7 @@ func (analyzer *GenkitSecurityAnalyzer) updateSiteContext(host string, llmRespon
 	}
 
 	// Обновляем эндпоинты
-	context.DiscoveredEndpoints[llmResponse.URL] = true
+	context.DiscoveredEndpoints[url] = true
 	context.LastUpdated = time.Now()
 }
 

@@ -66,15 +66,15 @@ func BuildSecurityAnalysisPrompt(req *models.SecurityAnalysisRequest) string {
 		req.URL,
 		req.Method,
 		req.Headers,
-		truncateString(req.RequestBody, 500),
-		truncateString(req.ResponseBody, 1000),
+		TruncateString(req.RequestBody, 500),
+		TruncateString(req.ResponseBody, 1000),
 		req.ContentType,
 		string(extractedDataJson),
 	)
 }
 
-// truncateString обрезает строку до указанной длины
-func truncateString(s string, maxLen int) string {
+// TruncateString обрезает строку до указанной длины
+func TruncateString(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
 	}

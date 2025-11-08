@@ -46,7 +46,6 @@ func (p *GeminiProvider) GenerateSecurityAnalysis(
 
 	// Устанавливаем timestamp и URL
 	result.Timestamp = time.Now()
-	result.URL = req.URL
 
 	// Дополняем результат извлеченными секретами
 	result.ExtractedSecrets = append(result.ExtractedSecrets, req.ExtractedData.APIKeys...)

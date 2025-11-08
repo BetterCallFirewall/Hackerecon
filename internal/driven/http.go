@@ -67,13 +67,15 @@ func NewSecurityProxyWithGenkit(cfg config.LLMConfig, wsHub *websocket.Websocket
 			format = llm.FormatOpenAI // По умолчанию OpenAI-compatible
 		}
 
-		genericProvider := llm.NewGenericProvider(llm.GenericConfig{
-			Name:    "custom-llm",
-			Model:   cfg.Model, // Передаём модель из конфигурации
-			BaseURL: cfg.BaseURL,
-			APIKey:  cfg.ApiKey,
-			Format:  format,
-		})
+		genericProvider := llm.NewGenericProvider(
+			llm.GenericConfig{
+				Name:    "custom-llm",
+				Model:   cfg.Model, // Передаём модель из конфигурации
+				BaseURL: cfg.BaseURL,
+				APIKey:  cfg.ApiKey,
+				Format:  format,
+			},
+		)
 
 		// Создаём пустой genkitApp для flows (можно оптимизировать позже)
 		genkitApp := genkit.Init(ctx)
@@ -302,7 +304,7 @@ func (ps *SecurityProxyWithGenkit) analyzeTraffic(
 		}
 	}
 
-	_, err := ps.Analyzer.AnalyzeHTTPTraffic(ctx, req, reqBody, respBody, contentType)
+	_, err := ps.Analyzer.AnalyzeHTTPTraffic(ctx, req, resp, reqBody, respBody, contentType)
 	if err != nil {
 		log.Printf("❌ Ошибка анализа %s: %v", req.URL.String(), err)
 	}

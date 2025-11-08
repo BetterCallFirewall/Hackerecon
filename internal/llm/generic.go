@@ -129,16 +129,9 @@ func (p *GenericProvider) GenerateSecurityAnalysis(
 	if result.SecurityChecklist == nil {
 		result.SecurityChecklist = []models.SecurityCheckItem{}
 	}
-	if result.Recommendations == nil {
-		result.Recommendations = []string{}
-	}
-	if result.IdentifiedDataObjects == nil {
-		result.IdentifiedDataObjects = []models.DataObject{}
-	}
 
 	// Устанавливаем дополнительные поля
 	result.Timestamp = time.Now()
-	result.URL = req.URL
 	result.ExtractedSecrets = append(result.ExtractedSecrets, req.ExtractedData.APIKeys...)
 	result.ExtractedSecrets = append(result.ExtractedSecrets, req.ExtractedData.Secrets...)
 
