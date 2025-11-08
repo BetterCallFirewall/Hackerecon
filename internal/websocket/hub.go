@@ -54,9 +54,10 @@ func (m *WebsocketManager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	log.Println("New WebSocket client connected.")
 	m.connMutex.Unlock()
 
+	ch := make(chan struct{})
 	// Мы передаем управление жизненным циклом соединения этим двум горутинам.
-	go m.writePump(conn)
-	m.readPump(conn) // Запускаем readPump в текущей горутине, чтобы ServeHTTP не завершился.
+	go m.writePump(conn, ch)
+	m.readPump(conn, ch) // Запускаем readPump в текущей горутине, чтобы ServeHTTP не завершился.
 }
 
 // Broadcast отправляет данные активному клиенту.
@@ -81,37 +82,43 @@ func (m *WebsocketManager) Broadcast(data interface{}) {
 }
 
 // writePump забирает сообщения из канала broadcast и отправляет их клиенту.
-func (m *WebsocketManager) writePump(conn *websocket.Conn) {
+func (m *WebsocketManager) writePump(conn *websocket.Conn, ch chan struct{}) {
 	defer conn.Close()
 	for {
-		message, ok := <-m.broadcast
-		log.Printf("writePump: received message: %s", message)
-		if !ok {
-			log.Println("Broadcast channel closed, stopping writePump.")
-			conn.WriteMessage(websocket.CloseMessage, []byte{})
+		select {
+		case <-ch:
+			log.Println("writePump: received disconnect signal, stopping writePump.")
 			return
-		}
-		conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-		if err := conn.WriteMessage(websocket.TextMessage, message); err != nil {
-			// Не логируем ошибку, если она связана с закрытием соединения,
-			// так как это ожидаемое поведение при смене клиента.
-			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Printf("Unexpected writePump error: %v", err)
+		case message, ok := <-m.broadcast:
+			log.Printf("writePump: received message: %s", message)
+			if !ok {
+				log.Println("Broadcast channel closed, stopping writePump.")
+				conn.WriteMessage(websocket.CloseMessage, []byte{})
+				return
 			}
-			log.Printf("writePump: closing connection: %v", err)
-			return
+			conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			if err := conn.WriteMessage(websocket.TextMessage, message); err != nil {
+				// Не логируем ошибку, если она связана с закрытием соединения,
+				// так как это ожидаемое поведение при смене клиента.
+				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+					log.Printf("Unexpected writePump error: %v", err)
+				}
+				log.Printf("writePump: closing connection: %v", err)
+				return
+			}
 		}
 	}
 }
 
 // readPump считывает сообщения от клиента для обнаружения разрыва соединения.
-func (m *WebsocketManager) readPump(conn *websocket.Conn) {
+func (m *WebsocketManager) readPump(conn *websocket.Conn, ch chan struct{}) {
 	defer func() {
 		m.connMutex.Lock()
 		// Очищаем ссылку только если это все еще то же самое соединение.
 		if m.activeConn == conn {
 			m.activeConn = nil
 			log.Println("WebSocket client disconnected.")
+			ch <- struct{}{}
 		}
 		m.connMutex.Unlock()
 		conn.Close()
