@@ -23,6 +23,11 @@ type HypothesisDTO struct {
 
 // HypothesisData содержит данные гипотезы
 type HypothesisData struct {
-	Hypothesis *SecurityHypothesis `json:"hypothesis"`
-	TechStack  *TechStack          `json:"tech_stack,omitempty"`
+	// Новый формат: список векторов атаки
+	AttackVectors  []*SecurityHypothesis `json:"attack_vectors"`
+	MainHypothesis *SecurityHypothesis   `json:"main_hypothesis,omitempty"` // Первый вектор (наиболее вероятный)
+	TechStack      *TechStack            `json:"tech_stack,omitempty"`
+
+	// Старый формат (обратная совместимость)
+	Hypothesis *SecurityHypothesis `json:"hypothesis,omitempty"`
 }

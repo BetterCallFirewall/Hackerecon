@@ -92,12 +92,12 @@ type SecurityHypothesis struct {
 	Status         HypothesisStatus `json:"status" jsonschema:"enum=active,enum=validated,enum=debunked,description=Current status"`
 }
 
-// AttackStep описывает один шаг в атаке
+// AttackStep описывает один шаг в атаке для пентестера
 type AttackStep struct {
 	Step        int    `json:"step" jsonschema:"description=Step number in sequence"`
-	Action      string `json:"action" jsonschema:"description=Action to perform"`
-	Description string `json:"description" jsonschema:"description=Detailed description of the step"`
-	Expected    string `json:"expected" jsonschema:"description=Expected result if vulnerable"`
+	Action      string `json:"action" jsonschema:"description=Attack action name"`
+	Description string `json:"description" jsonschema:"description=How to perform this step (specific HTTP request)"`
+	Expected    string `json:"expected" jsonschema:"description=Expected result if vulnerable vs. if protected"`
 }
 
 // HypothesisStatus представляет статус гипотезы
