@@ -74,13 +74,26 @@ func (g *HypothesisGenerator) GenerateForHost(host string) (*models.HypothesisRe
 		return nil, fmt.Errorf("failed to generate hypothesis: %w", err)
 	}
 
-	// Обновляем контекст
-	g.updateSiteContextWithHypothesis(siteContext, resp.Hypothesis)
+	// Обновляем контекст с главной гипотезой (первый вектор или старый формат)
+	var mainHypothesis *models.SecurityHypothesis
+	if len(resp.AttackVectors) > 0 {
+		mainHypothesis = resp.AttackVectors[0]
+		resp.MainHypothesis = mainHypothesis // Для обратной совместимости
+	} else if resp.Hypothesis != nil {
+		// Старый формат (обратная совместимость)
+		mainHypothesis = resp.Hypothesis
+		resp.AttackVectors = []*models.SecurityHypothesis{resp.Hypothesis}
+		resp.MainHypothesis = resp.Hypothesis
+	}
 
-	log.Printf(
-		"🎯 Manual hypothesis generated for %s: %s (confidence: %.2f)",
-		host, resp.Hypothesis.Title, resp.Hypothesis.Confidence,
-	)
+	if mainHypothesis != nil {
+		g.updateSiteContextWithHypothesis(siteContext, mainHypothesis)
+
+		log.Printf(
+			"🎯 Hypotheses generated for %s: %d vectors, main: %s (confidence: %.2f)",
+			host, len(resp.AttackVectors), mainHypothesis.Title, mainHypothesis.Confidence,
+		)
+	}
 
 	return resp, nil
 }

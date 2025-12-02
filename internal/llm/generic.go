@@ -416,9 +416,30 @@ func (p *GenericProvider) GenerateHypothesis(
 		return nil, fmt.Errorf("invalid JSON response: %w\nContent: %s", err, content)
 	}
 
-	// Валидация
-	if result.Hypothesis != nil {
-		now := time.Now()
+	// Валидация и нормализация векторов атаки
+	now := time.Now()
+
+	// Обрабатываем новый формат (attack_vectors)
+	if len(result.AttackVectors) > 0 {
+		for _, vector := range result.AttackVectors {
+			if vector.CreatedAt.IsZero() {
+				vector.CreatedAt = now
+			}
+			if vector.UpdatedAt.IsZero() {
+				vector.UpdatedAt = now
+			}
+			if vector.ID == "" {
+				vector.ID = fmt.Sprintf("%d_%s", time.Now().Unix(), vector.AttackVector)
+			}
+		}
+
+		// Устанавливаем главную гипотезу (первый вектор)
+		result.MainHypothesis = result.AttackVectors[0]
+
+		// Обратная совместимость
+		result.Hypothesis = result.AttackVectors[0]
+	} else if result.Hypothesis != nil {
+		// Старый формат (обратная совместимость)
 		if result.Hypothesis.CreatedAt.IsZero() {
 			result.Hypothesis.CreatedAt = now
 		}
@@ -428,6 +449,10 @@ func (p *GenericProvider) GenerateHypothesis(
 		if result.Hypothesis.ID == "" {
 			result.Hypothesis.ID = fmt.Sprintf("%d", time.Now().Unix())
 		}
+
+		// Конвертируем в новый формат
+		result.AttackVectors = []*models.SecurityHypothesis{result.Hypothesis}
+		result.MainHypothesis = result.Hypothesis
 	}
 
 	return &result, nil
@@ -452,9 +477,21 @@ func getMapKeys(m map[string]interface{}) []string {
 
 // normalizeJSONString экранирует неэкранированные спецсимволы в JSON
 func normalizeJSONString(content string) string {
-	// Используем json.Marshal для безопасного экранирования строк
-	// Но сначала нужно извлечь строковые значения и обработать их
+	// Шаг 1: Удаляем невалидные UTF-8 символы
+	content = strings.ToValidUTF8(content, "")
 
+	// Шаг 2: Удаляем trailing commas (частая ошибка LLM)
+	content = strings.ReplaceAll(content, ",}", "}")
+	content = strings.ReplaceAll(content, ",]", "]")
+	content = strings.ReplaceAll(content, ", }", "}")
+	content = strings.ReplaceAll(content, ", ]", "]")
+
+	// Шаг 2.5: Пытаемся исправить простые случаи вложенного JSON
+	// Ищем паттерны типа: "context": "... JSON: {\"key\": \"value\"} ..."
+	// И обрезаем до JSON (убираем всё после первого { внутри строки)
+	content = fixNestedJSON(content)
+
+	// Шаг 3: Экранируем неэкранированные спецсимволы в строках
 	var result strings.Builder
 	result.Grow(len(content) + len(content)/10)
 
@@ -505,6 +542,93 @@ func normalizeJSONString(content string) string {
 				} else {
 					result.WriteByte(ch)
 				}
+			}
+		} else {
+			result.WriteByte(ch)
+		}
+	}
+
+	return result.String()
+}
+
+// fixNestedJSON пытается исправить JSON, когда внутри строки есть вложенный JSON
+// Например: "context": "JSON: {\"key\": \"value\"}" → "context": "JSON example found"
+func fixNestedJSON(content string) string {
+	// Простое решение: если видим паттерн типа ": "{" внутри строки,
+	// то обрезаем эту строку до начала вложенного JSON
+
+	var result strings.Builder
+	result.Grow(len(content))
+
+	inString := false
+	escaped := false
+	possibleNestedJSON := false
+	bracketDepth := 0
+
+	for i := 0; i < len(content); i++ {
+		ch := content[i]
+
+		if escaped {
+			if !possibleNestedJSON {
+				result.WriteByte(ch)
+			}
+			escaped = false
+			continue
+		}
+
+		if ch == '\\' {
+			if !possibleNestedJSON {
+				result.WriteByte(ch)
+			}
+			escaped = true
+			continue
+		}
+
+		if ch == '"' && !escaped {
+			if inString {
+				// Конец строки
+				if possibleNestedJSON {
+					// Заменяем вложенный JSON на простой текст
+					result.WriteString(" (data truncated)")
+					possibleNestedJSON = false
+					bracketDepth = 0
+				}
+				inString = false
+			} else {
+				// Начало строки
+				inString = true
+			}
+			result.WriteByte(ch)
+			continue
+		}
+
+		// Внутри строки ищем паттерн вложенного JSON
+		if inString {
+			if ch == '{' && !escaped && !possibleNestedJSON {
+				// Возможно начало вложенного JSON
+				// Проверяем, не идёт ли перед этим экранирование \{
+				if i > 0 && content[i-1] == '\\' {
+					result.WriteByte(ch)
+				} else {
+					possibleNestedJSON = true
+					bracketDepth = 1
+					// Не пишем { в результат
+				}
+			} else if possibleNestedJSON {
+				// Внутри вложенного JSON - пропускаем
+				if ch == '{' {
+					bracketDepth++
+				} else if ch == '}' {
+					bracketDepth--
+					if bracketDepth == 0 {
+						// Конец вложенного JSON
+						// Не пишем закрывающую }
+						possibleNestedJSON = false
+					}
+				}
+				// Пропускаем все символы внутри вложенного JSON
+			} else {
+				result.WriteByte(ch)
 			}
 		} else {
 			result.WriteByte(ch)

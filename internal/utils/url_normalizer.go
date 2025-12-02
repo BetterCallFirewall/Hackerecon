@@ -54,15 +54,14 @@ func NewURLNormalizer() *URLNormalizer {
 			},
 
 			// Профили пользователей в вебе
+			// НЕ срабатывает на /profile/images, /profile/settings и т.д. (статичные пути)
 			{
-				PathPattern:  regexp.MustCompile(`/(users?|profiles?|accounts?)/([^/]+)(/|$)`),
-				ParamPattern: regexp.MustCompile(`/(users?|profiles?|accounts?)/([^/]+)(/|$)`),
-				Replacement:  "/$1/{username}$3",
+				PathPattern:  regexp.MustCompile(`/(users?|profiles?|accounts?)/([^/]+)$`),
+				ParamPattern: regexp.MustCompile(`/(users?|profiles?|accounts?)/([^/]+)$`),
+				Replacement:  "/$1/{username}",
 				Priority:     90,
 				Type:         "web_username",
-			},
-
-			// Статьи, посты со слагами
+			}, // Статьи, посты со слагами
 			{
 				PathPattern:  regexp.MustCompile(`/(articles?|posts?|blog|news|tutorials)/([a-z0-9-]+-[a-z0-9-]+)(/|$)`),
 				ParamPattern: regexp.MustCompile(`/(articles?|posts?|blog|news|tutorials)/([a-z0-9-]+-[a-z0-9-]+)(/|$)`),
@@ -122,6 +121,26 @@ func (un *URLNormalizer) NormalizeURL(rawURL string) string {
 	path := parsedURL.Path
 	if path == "" {
 		path = "/"
+	}
+
+	// Список статичных путей, которые НЕ должны нормализоваться
+	staticPaths := []string{
+		"images", "css", "js", "static", "assets", "public",
+		"settings", "preferences", "config", "help", "about",
+		"login", "logout", "register", "signup", "signin",
+		"search", "api", "docs", "documentation",
+	}
+
+	// Проверяем, содержит ли путь статичные сегменты
+	pathLower := strings.ToLower(path)
+	for _, staticPath := range staticPaths {
+		if strings.Contains(pathLower, "/"+staticPath) {
+			// Это статичный путь, возвращаем без нормализации
+			if parsedURL.Scheme != "" && parsedURL.Host != "" {
+				return parsedURL.Scheme + "://" + parsedURL.Host + path
+			}
+			return path
+		}
 	}
 
 	// Проверяем на специальные значения, которые не нужно нормализовать

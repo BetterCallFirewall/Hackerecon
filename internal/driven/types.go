@@ -22,7 +22,7 @@ const (
 	cacheRetentionRatio    = 0.5
 
 	// Analysis timeouts
-	defaultAnalysisTimeout = 30 * time.Second
+	defaultAnalysisTimeout = 60 * time.Second
 
 	// Site context requirements
 	minURLPatternsForHypothesis = 3

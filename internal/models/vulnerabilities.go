@@ -26,11 +26,11 @@ type SecurityAnalysisResponse struct {
 	IdentifiedDataObjects []DataObject `json:"identified_data_objects,omitempty" jsonschema:"description=Data objects and their fields found in the request/response"`
 }
 
-// SecurityCheckItem - элемент чеклиста для ручной проверки уязвимости
+// SecurityCheckItem - элемент чеклиста для пентестера (как эксплуатировать уязвимость)
 type SecurityCheckItem struct {
-	Action      string `json:"action" jsonschema:"description=Test action to verify the vulnerability"`
-	Description string `json:"description" jsonschema:"description=What to check and why"`
-	Expected    string `json:"expected" jsonschema:"description=Expected secure behavior if properly protected"`
+	Action      string `json:"action" jsonschema:"description=Attack action name (e.g., 'IDOR via ID substitution')"`
+	Description string `json:"description" jsonschema:"description=How to perform the attack (specific HTTP request)"`
+	Expected    string `json:"expected" jsonschema:"description=Expected result if vulnerable vs. if protected"`
 }
 
 // ExtractedSecret найденный секрет или чувствительные данные
@@ -98,8 +98,12 @@ type HypothesisRequest struct {
 	PreviousHypothesis  *SecurityHypothesis `json:"previous_hypothesis,omitempty" jsonschema:"description=Previous hypothesis for comparison"`
 }
 
-// HypothesisResponse ответ с генерированной гипотезой
+// HypothesisResponse ответ с генерированными гипотезами
 type HypothesisResponse struct {
-	Hypothesis *SecurityHypothesis `json:"hypothesis" jsonschema:"description=Generated security hypothesis"`
-	Reasoning  string              `json:"reasoning" jsonschema:"description=AI reasoning behind the hypothesis"`
+	AttackVectors  []*SecurityHypothesis `json:"attack_vectors" jsonschema:"description=List of possible attack vectors sorted by priority"`
+	MainHypothesis *SecurityHypothesis   `json:"main_hypothesis,omitempty" jsonschema:"description=Most likely attack vector (deprecated, use attack_vectors[0])"`
+	Reasoning      string                `json:"reasoning" jsonschema:"description=AI reasoning behind the hypothesis"`
+
+	// Для обратной совместимости
+	Hypothesis *SecurityHypothesis `json:"hypothesis,omitempty" jsonschema:"description=Deprecated: use attack_vectors or main_hypothesis"`
 }
