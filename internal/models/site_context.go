@@ -1,6 +1,8 @@
 package models
 
-import "time"
+import (
+	"time"
+)
 
 // SiteContext хранит накопленную информацию о целевом сайте.
 type SiteContext struct {

@@ -7,6 +7,28 @@ import (
 	"strings"
 )
 
+// Пакет-уровневые паттерны для оптимизации hot path
+// Эти паттерны компилируются один раз при запуске программы,
+// а не при каждом вызове функции, что значительно улучшает производительность
+// при обработке больших объемов HTTP-запросов.
+var (
+	// uuidPattern - паттерн для UUID в формате RFC 4122
+	// Например: 550e8400-e29b-41d4-a716-446655440000
+	uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+	// datePattern - паттерн для даты в формате YYYY-MM-DD
+	// Например: 2024-01-15
+	datePattern = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+
+	// idPattern - паттерн для slug-строк (для нормализации URL)
+	// Содержит строчные буквы, цифры и дефисы, длина 3-50 символов
+	slugPattern = regexp.MustCompile(`^[a-z0-9-]{3,50}$`)
+
+	// hashPattern - паттерн для хешей и токенов
+	// Hex-символы длиной 16-64 символов
+	hashPattern = regexp.MustCompile(`^[a-z0-9]{16,64}$`)
+)
+
 // URLNormalizer отвечает за умную нормализацию URL в паттерны
 type URLNormalizer struct {
 	// Контекстно-зависимые правила нормализации
@@ -35,20 +57,20 @@ func NewURLNormalizer() *URLNormalizer {
 				Type:         "uuid",
 			},
 
-			// API эндпоинты с ID
+			// API эндпоинты с ID (убираем $ чтобы работало с подпутями)
 			{
-				PathPattern:  regexp.MustCompile(`/api/(v\d+/)?(users|orders|products|posts|comments|files|documents|messages|notifications|sessions)/(\d+)/?$`),
-				ParamPattern: regexp.MustCompile(`/api/(v\d+/)?(users|orders|products|posts|comments|files|documents|messages|notifications|sessions)/(\d+)/?$`),
-				Replacement:  "/api/$1$2/{id}",
+				PathPattern:  regexp.MustCompile(`/api/(v\d+/)?(users|orders|products|posts|comments|files|documents|messages|notifications|sessions)/(\d+)(/|$)`),
+				ParamPattern: regexp.MustCompile(`/api/(v\d+/)?(users|orders|products|posts|comments|files|documents|messages|notifications|sessions)/(\d+)(/|$)`),
+				Replacement:  "/api/$1$2/{id}$4",
 				Priority:     100,
 				Type:         "api_id",
 			},
 
 			// API эндпоинты с username
 			{
-				PathPattern:  regexp.MustCompile(`/api/(v\d+/)?(profiles|accounts|blogs|channels)/([^/]+)/?$`),
-				ParamPattern: regexp.MustCompile(`/api/(v\d+/)?(profiles|accounts|blogs|channels)/([^/]+)/?$`),
-				Replacement:  "/api/$1$2/{username}",
+				PathPattern:  regexp.MustCompile(`/api/(v\d+/)?(profiles|accounts|blogs|channels)/([^/]+)(/|$)`),
+				ParamPattern: regexp.MustCompile(`/api/(v\d+/)?(profiles|accounts|blogs|channels)/([^/]+)(/|$)`),
+				Replacement:  "/api/$1$2/{username}$4",
 				Priority:     95,
 				Type:         "api_username",
 			},
@@ -124,22 +146,43 @@ func (un *URLNormalizer) NormalizeURL(rawURL string) string {
 	}
 
 	// Список статичных путей, которые НЕ должны нормализоваться
+	// Исключаем "api" из списка, т.к. он блокирует нормализацию API эндпоинтов
 	staticPaths := []string{
 		"images", "css", "js", "static", "assets", "public",
 		"settings", "preferences", "config", "help", "about",
 		"login", "logout", "register", "signup", "signin",
-		"search", "api", "docs", "documentation",
+		"search", "docs", "documentation",
 	}
 
-	// Проверяем, содержит ли путь статичные сегменты
-	pathLower := strings.ToLower(path)
-	for _, staticPath := range staticPaths {
-		if strings.Contains(pathLower, "/"+staticPath) {
-			// Это статичный путь, возвращаем без нормализации
-			if parsedURL.Scheme != "" && parsedURL.Host != "" {
-				return parsedURL.Scheme + "://" + parsedURL.Host + path
+	// Проверяем, является ли ПОСЛЕДНИЙ сегмент статичным файлом
+	pathSegments := strings.Split(strings.Trim(path, "/"), "/")
+	if len(pathSegments) > 0 {
+		lastSegment := strings.ToLower(pathSegments[len(pathSegments)-1])
+
+		// Проверяем на расширения файлов
+		if strings.Contains(lastSegment, ".") {
+			ext := lastSegment[strings.LastIndex(lastSegment, ".")+1:]
+			staticExts := []string{"css", "js", "png", "jpg", "jpeg", "gif", "svg", "ico", "woff", "woff2", "ttf", "eot"}
+			for _, staticExt := range staticExts {
+				if ext == staticExt {
+					if parsedURL.Scheme != "" && parsedURL.Host != "" {
+						return parsedURL.Scheme + "://" + parsedURL.Host + path
+					}
+					return path
+				}
 			}
-			return path
+		}
+
+		// Проверяем на статичные директории (только если это часть пути)
+		for _, segment := range pathSegments {
+			for _, staticPath := range staticPaths {
+				if segment == staticPath {
+					if parsedURL.Scheme != "" && parsedURL.Host != "" {
+						return parsedURL.Scheme + "://" + parsedURL.Host + path
+					}
+					return path
+				}
+			}
 		}
 	}
 
@@ -312,25 +355,19 @@ func isNumeric(s string) bool {
 }
 
 func isUUID(s string) bool {
-	uuidPattern := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 	return uuidPattern.MatchString(s)
 }
 
 func isDate(s string) bool {
-	datePattern := regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
 	return datePattern.MatchString(s)
 }
 
 func isSlug(s string) bool {
-	// Слаг содержит строчные буквы, цифры и дефисы, обычно 3-50 символов
-	slugPattern := regexp.MustCompile(`^[a-z0-9-]{3,50}$`)
 	return slugPattern.MatchString(s) && strings.Contains(s, "-")
 }
 
 func isHash(s string) bool {
-	// Хеш - это строка из hex символов длиной 8-64
-	hashPattern := regexp.MustCompile(`^[a-f0-9]{8,64}$`)
-	return hashPattern.MatchString(s) && len(s) > 8
+	return hashPattern.MatchString(s) && len(s) >= 16
 }
 
 func getQueryParamKeys(queryParams url.Values) []string {

@@ -3,7 +3,6 @@ package models
 type HTMLData struct {
 	FormActions []string
 	Comments    []string
-	URLs        []string
 }
 
 type JSFunction struct {

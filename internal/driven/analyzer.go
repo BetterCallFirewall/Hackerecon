@@ -2,12 +2,12 @@ package driven
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"log"
 	"net/http"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/BetterCallFirewall/Hackerecon/internal/llm"
 	"github.com/BetterCallFirewall/Hackerecon/internal/models"
@@ -17,6 +17,13 @@ import (
 	genkitcore "github.com/firebase/genkit/go/core"
 	"github.com/firebase/genkit/go/genkit"
 	"github.com/google/uuid"
+)
+
+// Пакет-уровневые паттерны для оптимизации hot path
+// Компилируются один раз при запуске программы
+var (
+	// whitespaceRegex - паттерн для замены множественных пробелов на один
+	whitespaceRegex = regexp.MustCompile(`\s+`)
 )
 
 // GenkitSecurityAnalyzer анализирует HTTP трафик на наличие уязвимостей безопасности
@@ -59,31 +66,95 @@ func NewGenkitSecurityAnalyzer(
 		cache:          NewAnalysisCache(),
 	}
 
-	// Инициализация data extractor с паттернами секретов
-	secretPatterns := createSecretRegexPatterns()
-	analyzer.dataExtractor = NewDataExtractor(secretPatterns)
+	// Инициализация data extractor
+	analyzer.dataExtractor = NewDataExtractor()
 
-	// Определяем flow для полного анализа безопасности
+	// Определяем flow для полного анализа безопасности с orchestration и tracing
 	analyzer.analysisFlow = genkit.DefineFlow(
 		genkitApp, "securityAnalysisFlow",
 		func(ctx context.Context, req *models.SecurityAnalysisRequest) (*models.SecurityAnalysisResponse, error) {
-			return analyzer.performSecurityAnalysis(ctx, req)
+			// Step 1: Extract data (traced)
+			extractedData, err := genkit.Run(ctx, "extract-data", func() (*models.ExtractedData, error) {
+				return analyzer.dataExtractor.ExtractFromContent(
+					req.RequestBody,
+					req.ResponseBody,
+					req.ContentType,
+				), nil
+			})
+			if err != nil {
+				return nil, err
+			}
+			req.ExtractedData = *extractedData
+
+			// Step 2: LLM analysis (traced)
+			result, err := genkit.Run(ctx, "llm-analysis", func() (*models.SecurityAnalysisResponse, error) {
+				return analyzer.llmProvider.GenerateSecurityAnalysis(ctx, req)
+			})
+			if err != nil {
+				return nil, fmt.Errorf("failed to generate security analysis: %w", err)
+			}
+
+			// Step 3: Finalize result (traced)
+			return genkit.Run(ctx, "finalize-result", func() (*models.SecurityAnalysisResponse, error) {
+				analyzer.finalizeAnalysisResult(result, req)
+				return result, nil
+			})
 		},
 	)
 
-	// Определяем flow для быстрой оценки URL
+	// Определяем flow для быстрой оценки URL с tracing
 	analyzer.urlAnalysisFlow = genkit.DefineFlow(
 		genkitApp, "urlAnalysisFlow",
 		func(ctx context.Context, req *models.URLAnalysisRequest) (*models.URLAnalysisResponse, error) {
-			return analyzer.performURLAnalysis(ctx, req)
+			// LLM analysis с трейсингом
+			result, err := genkit.Run(ctx, "llm-url-analysis", func() (*models.URLAnalysisResponse, error) {
+				return analyzer.llmProvider.GenerateURLAnalysis(ctx, req)
+			})
+			if err != nil {
+				return nil, fmt.Errorf("failed to generate URL analysis: %w", err)
+			}
+
+			// Validate result
+			return genkit.Run(ctx, "validate-url-result", func() (*models.URLAnalysisResponse, error) {
+				if result.URLNote == nil {
+					result.URLNote = &models.URLNote{
+						Content:    "Analysis completed",
+						Suspicious: false,
+						Confidence: 0.5,
+					}
+				}
+				return result, nil
+			})
 		},
 	)
 
-	// Определяем flow для генерации гипотез
+	// Определяем flow для генерации гипотез с orchestration
 	hypothesisFlow := genkit.DefineFlow(
 		genkitApp, "hypothesisFlow",
 		func(ctx context.Context, req *models.HypothesisRequest) (*models.HypothesisResponse, error) {
-			return analyzer.performHypothesisGeneration(ctx, req)
+			// LLM hypothesis generation с трейсингом
+			result, err := genkit.Run(ctx, "llm-hypothesis-generation", func() (*models.HypothesisResponse, error) {
+				return analyzer.llmProvider.GenerateHypothesis(ctx, req)
+			})
+			if err != nil {
+				return nil, fmt.Errorf("failed to generate hypothesis: %w", err)
+			}
+
+			// Validate and normalize hypothesis
+			return genkit.Run(ctx, "validate-hypothesis", func() (*models.HypothesisResponse, error) {
+				if result.Hypothesis == nil {
+					result.Hypothesis = &models.SecurityHypothesis{
+						ID:          uuid.New().String()[:8],
+						Title:       "No hypothesis generated",
+						Description: "Insufficient data",
+						Confidence:  0.0,
+						Status:      models.HypothesisActive,
+					}
+				} else if result.Hypothesis.ID == "" {
+					result.Hypothesis.ID = uuid.New().String()[:8]
+				}
+				return result, nil
+			})
 		},
 	)
 
@@ -97,19 +168,30 @@ func NewGenkitSecurityAnalyzer(
 	return analyzer, nil
 }
 
-// performSecurityAnalysis выполняет анализ безопасности с помощью провайдера
+// generateCacheKey создает безопасный ключ кэша с учетом тела запроса для POST/PUT/PATCH
+func (analyzer *GenkitSecurityAnalyzer) generateCacheKey(req *http.Request, reqBody string) string {
+	cacheKey := fmt.Sprintf("%s:%s", req.Method, analyzer.urlNormalizer.NormalizeWithContext(req.URL.String()))
+
+	// Для запросов с телом добавляем хэш чтобы предотвратить обход кэша
+	if analyzer.shouldIncludeBodyInCache(req.Method) && len(reqBody) > 0 {
+		bodyHash := sha256.Sum256([]byte(reqBody))
+		cacheKey = fmt.Sprintf("%s:%x", cacheKey, bodyHash[:8]) // Первые 8 байт хэша
+	}
+
+	return cacheKey
+}
+
+// shouldIncludeBodyInCache определяет, нужно ли включать тело запроса в ключ кэша
+func (analyzer *GenkitSecurityAnalyzer) shouldIncludeBodyInCache(method string) bool {
+	return method == "POST" || method == "PUT" || method == "PATCH"
+}
+
+// performSecurityAnalysis выполняет анализ безопасности через flow (с orchestration и tracing)
 func (analyzer *GenkitSecurityAnalyzer) performSecurityAnalysis(
 	ctx context.Context, req *models.SecurityAnalysisRequest,
 ) (*models.SecurityAnalysisResponse, error) {
-	result, err := analyzer.llmProvider.GenerateSecurityAnalysis(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate security analysis: %w", err)
-	}
-
-	// Финализируем результат
-	analyzer.finalizeAnalysisResult(result, req)
-
-	return result, nil
+	// Используем flow для автоматического tracing всех шагов
+	return analyzer.analysisFlow.Run(ctx, req)
 }
 
 // finalizeAnalysisResult финализирует результат анализа безопасности
@@ -117,9 +199,7 @@ func (analyzer *GenkitSecurityAnalyzer) finalizeAnalysisResult(
 	result *models.SecurityAnalysisResponse,
 	req *models.SecurityAnalysisRequest,
 ) {
-	result.Timestamp = time.Now()
 	analyzer.normalizeAndValidateRiskLevel(result)
-	analyzer.appendExtractedSecrets(result, req)
 }
 
 // normalizeAndValidateRiskLevel нормализует и валидирует уровень риска
@@ -139,15 +219,6 @@ func (analyzer *GenkitSecurityAnalyzer) normalizeAndValidateRiskLevel(result *mo
 	}
 }
 
-// appendExtractedSecrets добавляет извлеченные секреты к результату
-func (analyzer *GenkitSecurityAnalyzer) appendExtractedSecrets(
-	result *models.SecurityAnalysisResponse,
-	req *models.SecurityAnalysisRequest,
-) {
-	result.ExtractedSecrets = append(result.ExtractedSecrets, req.ExtractedData.APIKeys...)
-	result.ExtractedSecrets = append(result.ExtractedSecrets, req.ExtractedData.Secrets...)
-}
-
 // AnalyzeHTTPTraffic оптимизированный анализ HTTP трафика с двухэтапной проверкой
 func (analyzer *GenkitSecurityAnalyzer) AnalyzeHTTPTraffic(
 	ctx context.Context, req *http.Request, resp *http.Response, reqBody, respBody, contentType string,
@@ -164,9 +235,11 @@ func (analyzer *GenkitSecurityAnalyzer) AnalyzeHTTPTraffic(
 	// 2. Получаем/создаем контекст сайта
 	siteContext := analyzer.getOrCreateSiteContext(req.URL.Host)
 
-	// 3. Нормализация URL
+	// 3. Нормализация URL для анализа
 	normalizedURL := analyzer.urlNormalizer.NormalizeWithContext(req.URL.String())
-	cacheKey := fmt.Sprintf("%s:%s", req.Method, normalizedURL)
+
+	// 4. Генерация безопасного ключа кэша с учетом тела запроса
+	cacheKey := analyzer.generateCacheKey(req, reqBody)
 
 	// 5. Проверка кэша
 	if shouldSkipBasedOnCache := analyzer.checkCacheAndDecide(cacheKey); shouldSkipBasedOnCache {
@@ -238,17 +311,12 @@ func (analyzer *GenkitSecurityAnalyzer) fullSecurityAnalysis(
 	// Ленивое извлечение данных - только для HTML/JS контента
 	var extractedData *models.ExtractedData
 	if analyzer.shouldExtractData(contentType, respBody) {
-		extractedData = analyzer.extractDataFromContent(reqBody, respBody, contentType)
+		extractedData = analyzer.dataExtractor.ExtractFromContent(reqBody, respBody, contentType)
 	} else {
-		// Пустые данные для non-HTML/JS контента
+		// Пустые данные для non-HTML контента
 		extractedData = &models.ExtractedData{
-			URLs:          []string{},
-			APIKeys:       []models.ExtractedSecret{},
-			Secrets:       []models.ExtractedSecret{},
-			JSFunctions:   []models.JSFunction{},
-			FormActions:   []string{},
-			Comments:      []string{},
-			ExternalHosts: []string{},
+			FormActions: []string{},
+			Comments:    []string{},
 		}
 	}
 
@@ -297,7 +365,6 @@ func (analyzer *GenkitSecurityAnalyzer) broadcastAnalysisResult(
 		models.ReportDTO{
 			Report: models.VulnerabilityReport{
 				ID:             uuid.New().String(),
-				Timestamp:      time.Now(),
 				AnalysisResult: *result,
 			},
 			RequestResponse: models.RequestResponseInfo{
@@ -332,8 +399,7 @@ func (analyzer *GenkitSecurityAnalyzer) prepareContentForLLM(content, contentTyp
 			// Возвращаем только текст из body
 			textContent := doc.Find("body").Text()
 			// Заменяем множественные пробелы и переносы строк на один пробел
-			re := regexp.MustCompile(`\s+`)
-			textContent = re.ReplaceAllString(textContent, " ")
+			textContent = whitespaceRegex.ReplaceAllString(textContent, " ")
 			return llm.TruncateString("HTML Text Content: "+textContent, 2000) // Ограничиваем до 2000 символов
 		}
 	}
@@ -344,7 +410,7 @@ func (analyzer *GenkitSecurityAnalyzer) prepareContentForLLM(content, contentTyp
 	}
 
 	// Для всего остального (например, text/plain) тоже обрезаем
-	return llm.TruncateString(content, 1000)
+	return llm.TruncateString(content, 3500)
 }
 
 // shouldExtractData проверяет, нужно ли извлекать данные (только для HTML/JS)
@@ -358,72 +424,22 @@ func (analyzer *GenkitSecurityAnalyzer) shouldExtractData(contentType, body stri
 	return isHTML || isJS
 }
 
-// extractDataFromContent извлекает данные из HTTP контента
-func (analyzer *GenkitSecurityAnalyzer) extractDataFromContent(reqBody, respBody, contentType string) *models.ExtractedData {
-	return analyzer.dataExtractor.ExtractFromContent(reqBody, respBody, contentType)
-}
-
 // Новые функции для оптимизированного анализа
 
-// performURLAnalysis выполняет быстрый анализ URL
+// performURLAnalysis выполняет быстрый анализ URL через flow (с tracing)
 func (analyzer *GenkitSecurityAnalyzer) performURLAnalysis(
 	ctx context.Context, req *models.URLAnalysisRequest,
 ) (*models.URLAnalysisResponse, error) {
-	result, err := analyzer.llmProvider.GenerateURLAnalysis(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate URL analysis: %w", err)
-	}
-
-	// Валидация результата
-	if result.URLNote == nil {
-		result.URLNote = &models.URLNote{
-			Content:    "Analysis completed",
-			Suspicious: false,
-			Confidence: 0.5,
-		}
-	}
-
-	result.URLNote.Timestamp = time.Now()
-
-	return result, nil
+	// Используем flow для автоматического tracing
+	return analyzer.urlAnalysisFlow.Run(ctx, req)
 }
 
-// performHypothesisGeneration выполняет генерацию гипотез
+// performHypothesisGeneration выполняет генерацию гипотез через flow (с tracing)
 func (analyzer *GenkitSecurityAnalyzer) performHypothesisGeneration(
 	ctx context.Context, req *models.HypothesisRequest,
 ) (*models.HypothesisResponse, error) {
-	result, err := analyzer.llmProvider.GenerateHypothesis(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate hypothesis: %w", err)
-	}
-
-	// Валидация и заполнение дефолтных значений
-	if result.Hypothesis == nil {
-		result.Hypothesis = &models.SecurityHypothesis{
-			ID:          uuid.New().String()[:8],
-			Title:       "No hypothesis generated",
-			Description: "Insufficient data",
-			Confidence:  0.0,
-			CreatedAt:   time.Now(),
-			UpdatedAt:   time.Now(),
-			Status:      models.HypothesisActive,
-		}
-	} else {
-		// Заполняем timestamp если их нет
-		now := time.Now()
-		if result.Hypothesis.CreatedAt.IsZero() {
-			result.Hypothesis.CreatedAt = now
-		}
-		if result.Hypothesis.UpdatedAt.IsZero() {
-			result.Hypothesis.UpdatedAt = now
-		}
-		// Генерируем ID если его нет
-		if result.Hypothesis.ID == "" {
-			result.Hypothesis.ID = uuid.New().String()[:8]
-		}
-	}
-
-	return result, nil
+	// Используем flow для автоматического tracing
+	return analyzer.hypothesisGen.hypothesisFlow.Run(ctx, req)
 }
 
 // Функции для работы с кэшем

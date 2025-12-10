@@ -8,6 +8,14 @@ import (
 	"github.com/BetterCallFirewall/Hackerecon/internal/models"
 )
 
+// Пакет-уровневые паттерны для оптимизации производительности
+var (
+	// Version extraction patterns - compiled once at package initialization
+	versionPattern1 = regexp.MustCompile(`(\d+\.\d+\.\d+)`)
+	versionPattern2 = regexp.MustCompile(`(\d+\.\d+)`)
+	versionPattern3 = regexp.MustCompile(`v(\d+\.\d+\.\d+)`)
+)
+
 // TechDetector обнаруживает технологии на основе HTTP ответов
 type TechDetector struct {
 	// Правила для различных технологий
@@ -16,19 +24,19 @@ type TechDetector struct {
 
 // TechRule определяет правило обнаружения технологии
 type TechRule struct {
-	Name        string
-	Category    string
-	Patterns    []TechPattern
-	Confidence  float64
+	Name       string
+	Category   string
+	Patterns   []TechPattern
+	Confidence float64
 }
 
 // TechPattern представляет паттерн для обнаружения
 type TechPattern struct {
-	Type       string   // "header", "html", "js", "cookie", "url"
-	Search     string   // что искать
+	Type       string         // "header", "html", "js", "cookie", "url"
+	Search     string         // что искать
 	Regex      *regexp.Regexp // или регулярное выражение
-	Version    string   // как извлечь версию
-	Confidence float64  // уверенность этого паттерна
+	Version    string         // как извлечь версию
+	Confidence float64        // уверенность этого паттерна
 }
 
 // NewTechDetector создает новый детектор технологий
@@ -41,12 +49,12 @@ func NewTechDetector() *TechDetector {
 // DetectFromRequest обнаруживает технологии из HTTP запроса/ответа
 func (td *TechDetector) DetectFromRequest(req *http.Request, resp *http.Response, body string) *models.TechStack {
 	techStack := &models.TechStack{
-		Frontend: make([]models.Technology, 0),
-		Backend:  make([]models.Technology, 0),
-		Database: make([]models.Technology, 0),
+		Frontend:   make([]models.Technology, 0),
+		Backend:    make([]models.Technology, 0),
+		Database:   make([]models.Technology, 0),
 		Frameworks: make([]models.Technology, 0),
-		Servers:  make([]models.Technology, 0),
-		Other:    make([]models.Technology, 0),
+		Servers:    make([]models.Technology, 0),
+		Other:      make([]models.Technology, 0),
 	}
 
 	detectedTechs := make(map[string]*models.Technology)
@@ -274,11 +282,11 @@ func (td *TechDetector) mergeTechnology(existing, new *models.Technology) {
 // extractVersion пытается извлечь версию из доказательств
 func (td *TechDetector) extractVersion(evidence []models.Evidence) string {
 	for _, ev := range evidence {
-		// Ищем паттерны версий в содержимом
+		// Ищем паттерны версий в содержимом используя предкомпилированные regex
 		versionRegexes := []*regexp.Regexp{
-			regexp.MustCompile(`(\d+\.\d+\.\d+)`),
-			regexp.MustCompile(`(\d+\.\d+)`),
-			regexp.MustCompile(`v(\d+\.\d+\.\d+)`),
+			versionPattern1,
+			versionPattern2,
+			versionPattern3,
 		}
 
 		for _, re := range versionRegexes {

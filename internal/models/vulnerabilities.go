@@ -56,14 +56,10 @@ type SecurityAnalysisRequest struct {
 }
 
 // ExtractedData данные, извлеченные из контента перед анализом
+// Упрощенная версия после рефакторинга - оставлено только то, что сложно найти LLM
 type ExtractedData struct {
-	URLs          []string          `json:"urls" jsonschema:"description=Extracted URLs"`
-	APIKeys       []ExtractedSecret `json:"api_keys" jsonschema:"description=Found API keys"`
-	Secrets       []ExtractedSecret `json:"secrets" jsonschema:"description=Other secrets found"`
-	JSFunctions   []JSFunction      `json:"js_functions" jsonschema:"description=JavaScript functions found"`
-	FormActions   []string          `json:"form_actions" jsonschema:"description=Form action URLs"`
-	Comments      []string          `json:"comments" jsonschema:"description=HTML/JS comments"`
-	ExternalHosts []string          `json:"external_hosts" jsonschema:"description=External domains referenced"`
+	FormActions []string `json:"form_actions" jsonschema:"description=Form action URLs"`
+	Comments    []string `json:"comments" jsonschema:"description=HTML comments"`
 }
 
 type DataObject struct {

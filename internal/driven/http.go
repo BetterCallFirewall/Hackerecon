@@ -14,7 +14,6 @@ import (
 	"github.com/BetterCallFirewall/Hackerecon/internal/config"
 	"github.com/BetterCallFirewall/Hackerecon/internal/llm"
 	"github.com/BetterCallFirewall/Hackerecon/internal/websocket"
-	"github.com/firebase/genkit/go/genkit"
 )
 
 type SecurityProxyWithGenkit struct {
@@ -32,36 +31,24 @@ func NewSecurityProxyWithGenkit(cfg config.LLMConfig, wsHub *websocket.Websocket
 	var analyzer *GenkitSecurityAnalyzer
 	var err error
 
-	// Определяем формат API
-	var format llm.APIFormat
-	switch cfg.Format {
-	case "ollama":
-		format = llm.FormatOllama
-	case "raw":
-		format = llm.FormatRaw
-	default:
-		format = llm.FormatOpenAI // По умолчанию OpenAI-compatible
+	// Инициализируем Genkit один раз с нужными плагинами
+	genkitApp, err := llm.InitGenkitApp(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize Genkit: %w", err)
 	}
 
-	// Создаём провайдер
-	provider := llm.NewGenericProvider(
-		llm.GenericConfig{
-			Name:    cfg.Provider,
-			Model:   cfg.Model,
-			BaseURL: cfg.BaseURL,
-			APIKey:  cfg.ApiKey,
-			Format:  format,
-		},
-	)
+	// Создаём провайдер с готовым GenkitApp
+	provider, err := llm.NewProvider(genkitApp, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create LLM provider: %w", err)
+	}
 
-	// Создаём genkitApp для flows
-	genkitApp := genkit.Init(ctx)
-
+	// Создаём analyzer с GenkitApp и provider
 	analyzer, err = NewGenkitSecurityAnalyzer(genkitApp, provider, wsHub)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create analyzer: %w", err)
 	}
-	log.Printf("✅ Используется LLM провайдер: %s (модель: %s, формат: %s)", cfg.Provider, cfg.Model, cfg.Format)
+	log.Printf("✅ Используется LLM провайдер: %s (модель: %s)", cfg.Provider, cfg.Model)
 
 	burpIntegration := NewBurpIntegration(cfg.BurpHost, cfg.BurpPort)
 
