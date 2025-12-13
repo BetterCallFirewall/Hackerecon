@@ -77,9 +77,11 @@ func NewGenkitSecurityAnalyzer(
 				SiteContext:  req.SiteContext,
 			}
 
-			urlAnalysisResp, err := genkit.Run(ctx, "quick-url-analysis", func() (*models.URLAnalysisResponse, error) {
-				return analyzer.llmProvider.GenerateURLAnalysis(ctx, urlAnalysisReq)
-			})
+			urlAnalysisResp, err := genkit.Run(
+				ctx, "quick-url-analysis", func() (*models.URLAnalysisResponse, error) {
+					return analyzer.llmProvider.GenerateURLAnalysis(ctx, urlAnalysisReq)
+				},
+			)
 			if err != nil {
 				return nil, fmt.Errorf("quick URL analysis failed: %w", err)
 			}
@@ -96,29 +98,33 @@ func NewGenkitSecurityAnalyzer(
 			}
 
 			// Step 5: Extract data для полного анализа (traced)
-			extractedData, err := genkit.Run(ctx, "extract-data", func() (*models.ExtractedData, error) {
-				if analyzer.shouldExtractData(req.ContentType, req.ResponseBody) {
-					return analyzer.dataExtractor.ExtractFromContent(
-						req.RequestBody,
-						req.ResponseBody,
-						req.ContentType,
-					), nil
-				}
-				return &models.ExtractedData{
-					FormActions: []string{},
-					Comments:    []string{},
-				}, nil
-			})
+			extractedData, err := genkit.Run(
+				ctx, "extract-data", func() (models.ExtractedData, error) {
+					if analyzer.shouldExtractData(req.ContentType, req.ResponseBody) {
+						return analyzer.dataExtractor.ExtractFromContent(
+							req.RequestBody,
+							req.ResponseBody,
+							req.ContentType,
+						), nil
+					}
+					return models.ExtractedData{
+						FormActions: []string{},
+						Comments:    []string{},
+					}, nil
+				},
+			)
 			if err != nil {
 				return nil, err
 			}
 
 			// Step 6: Full Security Analysis (traced)
-			req.ExtractedData = *extractedData
+			req.ExtractedData = extractedData
 
-			return genkit.Run(ctx, "full-security-analysis", func() (*models.SecurityAnalysisResponse, error) {
-				return analyzer.llmProvider.GenerateSecurityAnalysis(ctx, req)
-			})
+			return genkit.Run(
+				ctx, "full-security-analysis", func() (*models.SecurityAnalysisResponse, error) {
+					return analyzer.llmProvider.GenerateSecurityAnalysis(ctx, req)
+				},
+			)
 		},
 	)
 
@@ -127,9 +133,11 @@ func NewGenkitSecurityAnalyzer(
 		genkitApp, "hypothesisFlow",
 		func(ctx context.Context, req *models.HypothesisRequest) (*models.HypothesisResponse, error) {
 			// LLM hypothesis generation с трейсингом
-			result, err := genkit.Run(ctx, "llm-hypothesis-generation", func() (*models.HypothesisResponse, error) {
-				return analyzer.llmProvider.GenerateHypothesis(ctx, req)
-			})
+			result, err := genkit.Run(
+				ctx, "llm-hypothesis-generation", func() (*models.HypothesisResponse, error) {
+					return analyzer.llmProvider.GenerateHypothesis(ctx, req)
+				},
+			)
 			if err != nil {
 				return nil, fmt.Errorf("failed to generate hypothesis: %w", err)
 			}
@@ -175,7 +183,11 @@ func (analyzer *GenkitSecurityAnalyzer) AnalyzeHTTPTraffic(
 		RequestBody:  analyzer.prepareContentForLLM(reqBody, req.Header.Get("Content-Type")),
 		ResponseBody: analyzer.prepareContentForLLM(respBody, contentType),
 		ContentType:  contentType,
-		SiteContext:  siteContext,
+		ExtractedData: models.ExtractedData{
+			FormActions: []string{},
+			Comments:    []string{},
+		},
+		SiteContext: siteContext,
 	}
 
 	// Запускаем unified flow (Quick → Full если LLM решит)
@@ -190,8 +202,10 @@ func (analyzer *GenkitSecurityAnalyzer) AnalyzeHTTPTraffic(
 
 	// 5. Логируем результат
 	if securityAnalysis != nil && securityAnalysis.HasVulnerability {
-		log.Printf("🔬 Полный анализ завершен для %s %s (риск: %s)",
-			req.Method, req.URL.String(), securityAnalysis.RiskLevel)
+		log.Printf(
+			"🔬 Полный анализ завершен для %s %s (риск: %s)",
+			req.Method, req.URL.String(), securityAnalysis.RiskLevel,
+		)
 	} else {
 		log.Printf("✅ Анализ завершен для %s %s", req.Method, req.URL.String())
 	}

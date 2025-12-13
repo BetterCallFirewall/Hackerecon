@@ -27,8 +27,8 @@ func NewDataExtractor() *DataExtractor {
 
 // ExtractFromContent извлекает только критически важные данные из HTTP контента
 // LLM справляется с поиском секретов, URL и JS функций лучше, чем regex
-func (e *DataExtractor) ExtractFromContent(reqBody, respBody, contentType string) *models.ExtractedData {
-	extractedData := &models.ExtractedData{
+func (e *DataExtractor) ExtractFromContent(reqBody, respBody, contentType string) models.ExtractedData {
+	extractedData := models.ExtractedData{
 		FormActions: make([]string, 0),
 		Comments:    make([]string, 0),
 	}
@@ -57,18 +57,20 @@ func (e *DataExtractor) isHTMLContent(content, contentType string) bool {
 }
 
 // extractHTMLData извлекает данные из HTML напрямую в extractedData
-func (e *DataExtractor) extractHTMLData(content string, data *models.ExtractedData) {
+func (e *DataExtractor) extractHTMLData(content string, data models.ExtractedData) {
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(content))
 	if err != nil {
 		return
 	}
 
 	// Извлекаем form actions
-	doc.Find("form[action]").Each(func(i int, s *goquery.Selection) {
-		if action, exists := s.Attr("action"); exists && action != "#" {
-			data.FormActions = append(data.FormActions, action)
-		}
-	})
+	doc.Find("form[action]").Each(
+		func(i int, s *goquery.Selection) {
+			if action, exists := s.Attr("action"); exists && action != "#" {
+				data.FormActions = append(data.FormActions, action)
+			}
+		},
+	)
 
 	// Извлекаем комментарии
 	comments := commentRegex.FindAllStringSubmatch(content, -1)
