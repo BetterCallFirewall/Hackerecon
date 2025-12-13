@@ -118,6 +118,8 @@ func BuildURLAnalysisPrompt(req *models.URLAnalysisRequest) string {
 			}
 			techStackInfo = strings.Join(techs, ", ")
 		}
+	} else {
+		req.SiteContext.TechStack = &models.TechStack{Technologies: make([]models.Technology, 0)}
 	}
 
 	responsePreview := TruncateString(req.ResponseBody, 300)
@@ -153,7 +155,6 @@ Response preview: %s
     "suspicious": true/false,
     "vuln_hint": "основная угроза если есть",
     "confidence": 0.0-1.0,
-    "context": "найденные технологии и риски одной строкой"
   },
   "should_analyze": true/false,
   "priority": "low|medium|high"
@@ -322,9 +323,13 @@ func groupPatternsByAttackType(patterns []*models.URLPattern) string {
 		// Классифицируем по вероятному типу атаки
 		if strings.Contains(p.Pattern, "{") || strings.Contains(strings.ToLower(p.Pattern), "id") {
 			idorPatterns = append(idorPatterns, patternStr)
-		} else if strings.Contains(strings.ToLower(p.Pattern), "admin") || strings.Contains(strings.ToLower(p.Pattern), "auth") {
+		} else if strings.Contains(strings.ToLower(p.Pattern), "admin") || strings.Contains(
+			strings.ToLower(p.Pattern), "auth",
+		) {
 			authPatterns = append(authPatterns, patternStr)
-		} else if strings.Contains(strings.ToLower(lastNote.VulnHint), "sql") || strings.Contains(strings.ToLower(lastNote.VulnHint), "injection") {
+		} else if strings.Contains(
+			strings.ToLower(lastNote.VulnHint), "sql",
+		) || strings.Contains(strings.ToLower(lastNote.VulnHint), "injection") {
 			sqlPatterns = append(sqlPatterns, patternStr)
 		} else {
 			otherPatterns = append(otherPatterns, patternStr)
@@ -380,7 +385,11 @@ func formatSuspiciousPatterns(patterns []*models.URLPattern) string {
 
 		result.WriteString(fmt.Sprintf("\n%d. URL Pattern: %s\n", i+1, p.Pattern))
 		result.WriteString(fmt.Sprintf("   Заметка: %s\n", lastNote.Content))
-		result.WriteString(fmt.Sprintf("   Подозрительность: %v (confidence: %.2f)\n", lastNote.Suspicious, lastNote.Confidence))
+		result.WriteString(
+			fmt.Sprintf(
+				"   Подозрительность: %v (confidence: %.2f)\n", lastNote.Suspicious, lastNote.Confidence,
+			),
+		)
 		if lastNote.VulnHint != "" {
 			result.WriteString(fmt.Sprintf("   Подсказка: %s\n", lastNote.VulnHint))
 		}
