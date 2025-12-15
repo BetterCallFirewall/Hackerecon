@@ -33,6 +33,11 @@ type SecurityCheckItem struct {
 	ConfidenceScore    float64 `json:"confidence_score,omitempty" jsonschema:"description=Updated confidence after verification (0.0-1.0),minimum=0,maximum=1"`
 	VerificationReason string  `json:"verification_reason,omitempty" jsonschema:"description=Why this status was assigned"`
 	RecommendedPOC     string  `json:"recommended_poc,omitempty" jsonschema:"description=Recommended proof-of-concept for manual testing"`
+
+	// Additional fields needed for verification
+	Hypothesis     string  `json:"hypothesis,omitempty" jsonschema:"description=Security hypothesis to verify"`
+	Confidence     float64 `json:"confidence,omitempty" jsonschema:"description=Confidence score (0.0-1.0)"`
+	OriginalIndex  int     `json:"original_index,omitempty" jsonschema:"description=Index in original checklist"`
 }
 
 // VerificationRequest - запрос на верификацию гипотез
@@ -124,4 +129,46 @@ type HypothesisRequest struct {
 type HypothesisResponse struct {
 	AttackVectors []*SecurityHypothesis `json:"attack_vectors" jsonschema:"description=List of possible attack vectors sorted by priority"`
 	Reasoning     string                `json:"reasoning" jsonschema:"description=AI reasoning behind the hypothesis"`
+}
+
+// Verification-related models for LLM-based verification
+
+// VerificationPlanRequest запрос к LLM для генерации плана верификации
+type VerificationPlanRequest struct {
+	Hypothesis      string            `json:"hypothesis" jsonschema:"description=Security hypothesis to verify"`
+	OriginalRequest RequestResponseInfo `json:"original_request" jsonschema:"description=Original request being analyzed"`
+	MaxAttempts     int               `json:"max_attempts" jsonschema:"description=Maximum number of test attempts"`
+	TargetURL       string            `json:"target_url" jsonschema:"description=Target URL for testing"`
+	AdditionalInfo  string            `json:"additional_info" jsonschema:"description=Additional context for LLM"`
+}
+
+// VerificationPlanResponse ответ от LLM с планом верификации
+type VerificationPlanResponse struct {
+	TestRequests []TestRequest `json:"test_requests" jsonschema:"description=Generated test requests"`
+	Reasoning    string        `json:"reasoning" jsonschema:"description=LLM reasoning for test generation"`
+}
+
+// TestRequest структура тестового запроса (для LLM)
+type TestRequest struct {
+	URL     string            `json:"url" jsonschema:"description=Test request URL"`
+	Method  string            `json:"method" jsonschema:"description=HTTP method"`
+	Headers map[string]string `json:"headers,omitempty" jsonschema:"description=Request headers"`
+	Body    string            `json:"body,omitempty" jsonschema:"description=Request body (for POST/PUT)"`
+	Purpose string            `json:"purpose" jsonschema:"description=Purpose of this test request"`
+}
+
+// VerificationAnalysisRequest запрос к LLM для анализа результатов верификации
+type VerificationAnalysisRequest struct {
+	Hypothesis        string        `json:"hypothesis" jsonschema:"description=Original security hypothesis"`
+	OriginalConfidence float64      `json:"original_confidence" jsonschema:"description=Original confidence score (0.0-1.0)"`
+	TestResults       []TestAttempt `json:"test_results" jsonschema:"description=Results of test attempts"`
+	OriginalRequest   RequestResponseInfo `json:"original_request" jsonschema:"description=Original request context"`
+}
+
+// VerificationAnalysisResponse ответ от LLM с анализом результатов верификации
+type VerificationAnalysisResponse struct {
+	Status            string  `json:"status" jsonschema:"enum=verified,enum=likely_false,enum=inconclusive,enum=manual_check,description=Verification status"`
+	UpdatedConfidence float64 `json:"updated_confidence" jsonschema:"description=Updated confidence score (0.0-1.0)"`
+	Reasoning         string  `json:"reasoning" jsonschema:"description=LLM reasoning about verification results"`
+	RecommendedPOC    string  `json:"recommended_poc,omitempty" jsonschema:"description=Recommended manual proof of concept"`
 }

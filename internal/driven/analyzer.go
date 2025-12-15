@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/BetterCallFirewall/Hackerecon/internal/llm"
 	"github.com/BetterCallFirewall/Hackerecon/internal/models"
 	"github.com/BetterCallFirewall/Hackerecon/internal/utils"
+	"github.com/BetterCallFirewall/Hackerecon/internal/verification"
 	"github.com/BetterCallFirewall/Hackerecon/internal/websocket"
 	"github.com/PuerkitoBio/goquery"
 	genkitcore "github.com/firebase/genkit/go/core"
@@ -37,11 +39,17 @@ type GenkitSecurityAnalyzer struct {
 	// Analysis flow (возвращает SecurityAnalysisResponse или nil если анализ не нужен)
 	unifiedAnalysisFlow *genkitcore.Flow[*models.SecurityAnalysisRequest, *models.SecurityAnalysisResponse, struct{}]
 
+	// Verification flow
+	verificationFlow *genkitcore.Flow[*models.VerificationRequest, *models.VerificationResponse, struct{}]
+
 	// Modular components
 	contextManager *SiteContextManager
 	dataExtractor  *DataExtractor
 	hypothesisGen  *HypothesisGenerator
 	requestFilter  *utils.RequestFilter
+
+	// Verification client
+	verificationClient *verification.VerificationClient
 }
 
 // NewGenkitSecurityAnalyzer создаёт анализатор с кастомным LLM провайдером
@@ -151,6 +159,21 @@ func NewGenkitSecurityAnalyzer(
 		hypothesisFlow,
 		wsHub,
 		analyzer.contextManager,
+	)
+
+	// Initialize verification client
+	analyzer.verificationClient = verification.NewVerificationClient(verification.VerificationClientConfig{
+		Timeout:    30 * time.Second,
+		MaxRetries: 2,
+	})
+
+	// Initialize verification flow
+	analyzer.verificationFlow = genkit.DefineFlow(
+		analyzer.genkitApp,
+		"verificationFlow",
+		func(ctx context.Context, req *models.VerificationRequest) (*models.VerificationResponse, error) {
+			return analyzer.verifyHypothesis(ctx, req)
+		},
 	)
 
 	return analyzer, nil
@@ -302,6 +325,131 @@ func (analyzer *GenkitSecurityAnalyzer) updateURLPattern(
 // GenerateHypothesisForHost принудительно генерирует гипотезу для хоста
 func (analyzer *GenkitSecurityAnalyzer) GenerateHypothesisForHost(host string) (*models.HypothesisResponse, error) {
 	return analyzer.hypothesisGen.GenerateForHost(host)
+}
+
+// verifyHypothesis верифицирует гипотезу об уязвимости с помощью LLM
+func (analyzer *GenkitSecurityAnalyzer) verifyHypothesis(ctx context.Context, req *models.VerificationRequest) (*models.VerificationResponse, error) {
+	log.Printf("🔬 Starting verification for hypothesis: %s", req.ChecklistItem.Hypothesis)
+
+	// Шаг 1: LLM генерирует тестовые запросы на основе гипотезы
+	prompt := analyzer.buildVerificationPrompt(req)
+
+	llmResponse, err := analyzer.llmProvider.GenerateVerificationPlan(ctx, &models.VerificationPlanRequest{
+		Hypothesis:       req.ChecklistItem.Hypothesis,
+		OriginalRequest:  req.OriginalRequest,
+		MaxAttempts:      req.MaxAttempts,
+		TargetURL:        req.OriginalRequest.URL,
+		AdditionalInfo:   prompt,
+	})
+
+	if err != nil {
+		return &models.VerificationResponse{
+			Status:            "inconclusive",
+			UpdatedConfidence: req.ChecklistItem.Confidence,
+			Reasoning:         fmt.Sprintf("Failed to generate verification plan: %v", err),
+			TestAttempts:      []models.TestAttempt{},
+		}, nil
+	}
+
+	// Шаг 2: Выполняем сгенерированные тестовые запросы
+	var testAttempts []models.TestAttempt
+	var successfulTests []models.TestAttempt
+
+	for _, testReq := range llmResponse.TestRequests {
+		// Конвертируем в формат verification client
+		verificationReq := verification.TestRequest{
+			URL:     testReq.URL,
+			Method:  testReq.Method,
+			Headers: testReq.Headers,
+			Body:    testReq.Body,
+		}
+
+		// Выполняем запрос
+		testResp, err := analyzer.verificationClient.MakeRequest(ctx, verificationReq)
+
+		testAttempt := models.TestAttempt{
+			RequestURL:    testReq.URL,
+			RequestMethod: testReq.Method,
+			Headers:       make(map[string]string),
+		}
+
+		if err != nil {
+			testAttempt.Error = err.Error()
+			testAttempt.StatusCode = 0
+			log.Printf("❌ Test request failed: %s - %v", testReq.URL, err)
+		} else {
+			testAttempt.StatusCode = testResp.StatusCode
+			testAttempt.ResponseSize = testResp.ResponseSize
+			testAttempt.ResponseBody = testResp.ResponseBody
+			testAttempt.Headers = testResp.Headers
+			testAttempt.Duration = testResp.Duration.String()
+			successfulTests = append(successfulTests, testAttempt)
+			log.Printf("✅ Test request completed: %s - Status: %d", testReq.URL, testResp.StatusCode)
+		}
+
+		testAttempts = append(testAttempts, testAttempt)
+	}
+
+	// Шаг 3: LLM анализирует результаты и определяет статус верификации
+	analysisResponse, err := analyzer.llmProvider.AnalyzeVerificationResults(ctx, &models.VerificationAnalysisRequest{
+		Hypothesis:        req.ChecklistItem.Hypothesis,
+		OriginalConfidence: req.ChecklistItem.Confidence,
+		TestResults:       successfulTests,
+		OriginalRequest:   req.OriginalRequest,
+	})
+
+	if err != nil {
+		return &models.VerificationResponse{
+			Status:            "inconclusive",
+			UpdatedConfidence: req.ChecklistItem.Confidence,
+			Reasoning:         fmt.Sprintf("Failed to analyze verification results: %v", err),
+			TestAttempts:      testAttempts,
+		}, nil
+	}
+
+	log.Printf("🎯 Verification completed for hypothesis: %s - Status: %s",
+		req.ChecklistItem.Hypothesis, analysisResponse.Status)
+
+	return &models.VerificationResponse{
+		OriginalIndex:     req.ChecklistItem.OriginalIndex,
+		Status:            analysisResponse.Status,
+		UpdatedConfidence: analysisResponse.UpdatedConfidence,
+		Reasoning:         analysisResponse.Reasoning,
+		TestAttempts:      testAttempts,
+		RecommendedPOC:    analysisResponse.RecommendedPOC,
+	}, nil
+}
+
+// buildVerificationPrompt создает промпт для LLM с контекстом верификации
+func (analyzer *GenkitSecurityAnalyzer) buildVerificationPrompt(req *models.VerificationRequest) string {
+	return fmt.Sprintf(`You are a security verification assistant. Your task is to verify a security hypothesis by generating and analyzing test requests.
+
+HYPOTHESIS TO VERIFY: %s
+CONFIDENCE LEVEL: %.2f
+TARGET: %s
+
+ORIGINAL REQUEST DETAILS:
+- Method: %s
+- URL: %s
+- Status Code: %d
+- Response Size: %d bytes
+
+VERIFICATION REQUIREMENTS:
+1. Generate %d test requests to verify this hypothesis
+2. Each request should target the specific vulnerability type suggested
+3. Focus on non-destructive testing that demonstrates the vulnerability
+4. Include variations in parameters, payloads, or endpoints as appropriate
+5. Consider both positive (vulnerable) and negative (secure) test cases
+
+Generate targeted test requests that can definitively prove or disprove this security hypothesis.`,
+		req.ChecklistItem.Hypothesis,
+		req.ChecklistItem.Confidence,
+		req.OriginalRequest.URL,
+		req.OriginalRequest.Method,
+		req.OriginalRequest.URL,
+		req.OriginalRequest.StatusCode,
+		len(req.OriginalRequest.RespBody),
+		req.MaxAttempts)
 }
 
 // GetSiteContext возвращает контекст для хоста (для отладки)
