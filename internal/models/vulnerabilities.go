@@ -24,9 +24,9 @@ type SecurityAnalysisResponse struct {
 
 // SecurityCheckItem - элемент чеклиста для пентестера
 type SecurityCheckItem struct {
-	Action      string  `json:"action" jsonschema:"description=Attack action name"`
-	Description string  `json:"description" jsonschema:"description=How to perform the attack"`
-	Expected    string  `json:"expected" jsonschema:"description=Expected result if vulnerable vs. if protected"`
+	Action      string `json:"action" jsonschema:"description=Attack action name"`
+	Description string `json:"description" jsonschema:"description=How to perform the attack"`
+	Expected    string `json:"expected" jsonschema:"description=Expected result if vulnerable vs. if protected"`
 
 	// Verification results (заполняется после проверки)
 	VerificationStatus string  `json:"verification_status,omitempty" jsonschema:"enum=verified,enum=likely_false,enum=inconclusive,enum=manual_check,description=Auto-verification status"`
@@ -129,11 +129,11 @@ type HypothesisResponse struct {
 
 // VerificationPlanRequest запрос к LLM для генерации плана верификации
 type VerificationPlanRequest struct {
-	Hypothesis      string            `json:"hypothesis" jsonschema:"description=Security hypothesis to verify"`
+	Hypothesis      string              `json:"hypothesis" jsonschema:"description=Security hypothesis to verify"`
 	OriginalRequest RequestResponseInfo `json:"original_request" jsonschema:"description=Original request being analyzed"`
-	MaxAttempts     int               `json:"max_attempts" jsonschema:"description=Maximum number of test attempts"`
-	TargetURL       string            `json:"target_url" jsonschema:"description=Target URL for testing"`
-	AdditionalInfo  string            `json:"additional_info" jsonschema:"description=Additional context for LLM"`
+	MaxAttempts     int                 `json:"max_attempts" jsonschema:"description=Maximum number of test attempts"`
+	TargetURL       string              `json:"target_url" jsonschema:"description=Target URL for testing"`
+	AdditionalInfo  string              `json:"additional_info" jsonschema:"description=Additional context for LLM"`
 }
 
 // VerificationPlanResponse ответ от LLM с планом верификации
@@ -153,10 +153,10 @@ type TestRequest struct {
 
 // VerificationAnalysisRequest запрос к LLM для анализа результатов верификации
 type VerificationAnalysisRequest struct {
-	Hypothesis        string        `json:"hypothesis" jsonschema:"description=Original security hypothesis"`
-	OriginalConfidence float64      `json:"original_confidence" jsonschema:"description=Original confidence score (0.0-1.0)"`
-	TestResults       []TestAttempt `json:"test_results" jsonschema:"description=Results of test attempts"`
-	OriginalRequest   RequestResponseInfo `json:"original_request" jsonschema:"description=Original request context"`
+	Hypothesis         string              `json:"hypothesis" jsonschema:"description=Original security hypothesis"`
+	OriginalConfidence float64             `json:"original_confidence" jsonschema:"description=Original confidence score (0.0-1.0)"`
+	TestResults        []TestAttempt       `json:"test_results" jsonschema:"description=Results of test attempts"`
+	OriginalRequest    RequestResponseInfo `json:"original_request" jsonschema:"description=Original request context"`
 }
 
 // VerificationAnalysisResponse ответ от LLM с анализом результатов верификации
