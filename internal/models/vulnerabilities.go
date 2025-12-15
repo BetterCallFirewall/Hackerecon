@@ -28,16 +28,11 @@ type SecurityCheckItem struct {
 	Description string  `json:"description" jsonschema:"description=How to perform the attack"`
 	Expected    string  `json:"expected" jsonschema:"description=Expected result if vulnerable vs. if protected"`
 
-	// New verification fields
+	// Verification results (заполняется после проверки)
 	VerificationStatus string  `json:"verification_status,omitempty" jsonschema:"enum=verified,enum=likely_false,enum=inconclusive,enum=manual_check,description=Auto-verification status"`
-	ConfidenceScore    float64 `json:"confidence_score,omitempty" jsonschema:"description=Updated confidence after verification (0.0-1.0),minimum=0,maximum=1"`
+	ConfidenceScore    float64 `json:"confidence_score,omitempty" jsonschema:"description=Confidence after verification (0.0-1.0),minimum=0,maximum=1"`
 	VerificationReason string  `json:"verification_reason,omitempty" jsonschema:"description=Why this status was assigned"`
 	RecommendedPOC     string  `json:"recommended_poc,omitempty" jsonschema:"description=Recommended proof-of-concept for manual testing"`
-
-	// Additional fields needed for verification
-	Hypothesis     string  `json:"hypothesis,omitempty" jsonschema:"description=Security hypothesis to verify"`
-	Confidence     float64 `json:"confidence,omitempty" jsonschema:"description=Confidence score (0.0-1.0)"`
-	OriginalIndex  int     `json:"original_index,omitempty" jsonschema:"description=Index in original checklist"`
 }
 
 // VerificationRequest - запрос на верификацию гипотез
@@ -49,7 +44,6 @@ type VerificationRequest struct {
 
 // VerificationResponse - результат верификации
 type VerificationResponse struct {
-	OriginalIndex     int           `json:"original_index" jsonschema:"description=Index in original checklist"`
 	Status            string        `json:"status" jsonschema:"enum=verified,enum=likely_false,enum=inconclusive,enum=manual_check,description=Verification status"`
 	UpdatedConfidence float64       `json:"updated_confidence" jsonschema:"description=Updated confidence score (0.0-1.0)"`
 	Reasoning         string        `json:"reasoning" jsonschema:"description=LLM reasoning about verification results"`

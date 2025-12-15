@@ -260,7 +260,28 @@ func (analyzer *GenkitSecurityAnalyzer) broadcastAnalysisResult(
 		RespBody:    llm.TruncateString(respBody, maxContentSizeForLLM),
 	}
 
-	// Broadcast initial result immediately (fast response)
+	// Run synchronous verification if there are checklist items
+	if result.HasVulnerability && len(result.SecurityChecklist) > 0 {
+		log.Printf("🔬 Starting synchronous verification for %d checklist items", len(result.SecurityChecklist))
+		
+		// Verify and filter checklist
+		verifiedChecklist := analyzer.verifyAndFilterChecklist(result.SecurityChecklist, requestInfo)
+		
+		// Update checklist with only valid items
+		result.SecurityChecklist = verifiedChecklist
+		
+		// If all items were filtered out, mark as no vulnerability
+		if len(verifiedChecklist) == 0 {
+			result.HasVulnerability = false
+			result.RiskLevel = "low"
+			log.Printf("✅ All checklist items filtered as false positives")
+		} else {
+			log.Printf("✅ Verification completed: %d valid items (filtered %d)", 
+				len(verifiedChecklist), len(result.SecurityChecklist)-len(verifiedChecklist))
+		}
+	}
+
+	// Broadcast final result with verified checklist
 	reportID := uuid.New().String()
 	analyzer.WsHub.Broadcast(models.ReportDTO{
 		Report: models.VulnerabilityReport{
@@ -268,35 +289,23 @@ func (analyzer *GenkitSecurityAnalyzer) broadcastAnalysisResult(
 			Timestamp:      time.Now(),
 			AnalysisResult: *result,
 		},
-		RequestResponse:    requestInfo,
-		VerificationStatus: "in_progress", // NEW: track verification progress
+		RequestResponse: requestInfo,
 	})
-
-	// Start background verification if there are checklist items
-	if result.HasVulnerability && len(result.SecurityChecklist) > 0 {
-		go analyzer.verifyChecklistInBackground(reportID, result, requestInfo)
-	}
 }
 
-// verifyChecklistInBackground performs async verification of security checklist items
-func (analyzer *GenkitSecurityAnalyzer) verifyChecklistInBackground(
-	reportID string,
-	result *models.SecurityAnalysisResponse,
+// verifyAndFilterChecklist synchronously verifies checklist items and filters out false positives
+func (analyzer *GenkitSecurityAnalyzer) verifyAndFilterChecklist(
+	checklist []models.SecurityCheckItem,
 	requestInfo models.RequestResponseInfo,
-) {
+) []models.SecurityCheckItem {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	log.Printf("🔬 Starting background verification for %d checklist items", len(result.SecurityChecklist))
+	validItems := make([]models.SecurityCheckItem, 0, len(checklist))
 
-	// Verify each checklist item
-	verificationResults := make([]*models.VerificationResponse, len(result.SecurityChecklist))
-
-	for i, item := range result.SecurityChecklist {
-		// Ensure hypothesis is set for verification
-		if item.Hypothesis == "" {
-			item.Hypothesis = item.Action + " - " + item.Description
-		}
+	for i, item := range checklist {
+		// Generate hypothesis on the fly
+		hypothesis := item.Action + " - " + item.Description
 
 		// Create verification request
 		verificationReq := &models.VerificationRequest{
@@ -305,95 +314,49 @@ func (analyzer *GenkitSecurityAnalyzer) verifyChecklistInBackground(
 			MaxAttempts:     3,
 		}
 
-		// Execute verification flow
+		// Execute verification
 		verificationResult, err := genkit.Run(
 			ctx, "verification", func() (*models.VerificationResponse, error) {
-				return analyzer.verifyHypothesis(ctx, verificationReq)
+				return analyzer.verifyHypothesis(ctx, verificationReq, hypothesis)
 			},
 		)
+
 		if err != nil {
 			log.Printf("❌ Verification failed for item %d: %v", i, err)
-
-			// Create fallback result
-			verificationResult = &models.VerificationResponse{
-				OriginalIndex:     i,
-				Status:            "inconclusive",
-				UpdatedConfidence: item.ConfidenceScore,
-				Reasoning:         fmt.Sprintf("Verification failed: %v", err),
-			}
+			// On error, keep item as inconclusive
+			item.VerificationStatus = "inconclusive"
+			item.VerificationReason = fmt.Sprintf("Verification failed: %v", err)
+			validItems = append(validItems, item)
+			continue
 		}
 
-		verificationResult.OriginalIndex = i
-		verificationResults[i] = verificationResult
+		// Update item with verification results
+		item.VerificationStatus = verificationResult.Status
+		item.ConfidenceScore = verificationResult.UpdatedConfidence
+		item.VerificationReason = verificationResult.Reasoning
+		item.RecommendedPOC = verificationResult.RecommendedPOC
 
-		log.Printf("📋 Item %d verification completed: %s (confidence: %.2f)",
-			i, verificationResult.Status, verificationResult.UpdatedConfidence)
-	}
+		log.Printf("📋 Item %d: %s - Status: %s (confidence: %.2f)",
+			i, item.Action, verificationResult.Status, verificationResult.UpdatedConfidence)
 
-	// Update checklist with verification results
-	updatedChecklist := analyzer.applyVerificationResults(result.SecurityChecklist, verificationResults)
-
-	// Update result
-	result.SecurityChecklist = updatedChecklist
-	result.ConfidenceScore = analyzer.calculateOverallConfidence(verificationResults)
-
-	log.Printf("✅ All verifications completed. Overall confidence: %.2f", result.ConfidenceScore)
-
-	// Broadcast updated result
-	analyzer.WsHub.Broadcast(models.ReportDTO{
-		Report: models.VulnerabilityReport{
-			ID:             reportID,
-			Timestamp:      time.Now(),
-			AnalysisResult: *result,
-		},
-		RequestResponse:     requestInfo,
-		VerificationStatus:  "completed",
-		VerificationResults: verificationResults, // NEW: include detailed verification results
-	})
-}
-
-// applyVerificationResults updates checklist items with verification results
-func (analyzer *GenkitSecurityAnalyzer) applyVerificationResults(
-	original []models.SecurityCheckItem,
-	results []*models.VerificationResponse,
-) []models.SecurityCheckItem {
-
-	updated := make([]models.SecurityCheckItem, len(original))
-
-	for i, item := range original {
-		if i < len(results) {
-			result := results[i]
-
-			// Create copy of original item
-			updatedItem := item
-
-			// Update with verification results
-			updatedItem.VerificationStatus = result.Status
-			updatedItem.ConfidenceScore = result.UpdatedConfidence
-			updatedItem.VerificationReason = result.Reasoning
-			updatedItem.RecommendedPOC = result.RecommendedPOC
-
-			updated[i] = updatedItem
-		} else {
-			updated[i] = item
+		// Filter: keep only verified, inconclusive, and manual_check
+		// Drop likely_false items
+		if verificationResult.Status == "likely_false" {
+			log.Printf("🔴 Filtered out as false positive: %s", item.Action)
+			continue
 		}
+
+		// Also filter by confidence - keep only if confidence > 0.3
+		if verificationResult.UpdatedConfidence < 0.3 {
+			log.Printf("🔴 Filtered out low confidence (%.2f): %s",
+				verificationResult.UpdatedConfidence, item.Action)
+			continue
+		}
+
+		validItems = append(validItems, item)
 	}
 
-	return updated
-}
-
-// calculateOverallConfidence calculates overall confidence from verification results
-func (analyzer *GenkitSecurityAnalyzer) calculateOverallConfidence(results []*models.VerificationResponse) float64 {
-	if len(results) == 0 {
-		return 0.5
-	}
-
-	total := 0.0
-	for _, result := range results {
-		total += result.UpdatedConfidence
-	}
-
-	return total / float64(len(results))
+	return validItems
 }
 
 // getOrCreateSiteContext получает или создает контекст для хоста.
@@ -455,24 +418,28 @@ func (analyzer *GenkitSecurityAnalyzer) GenerateHypothesisForHost(host string) (
 }
 
 // verifyHypothesis верифицирует гипотезу об уязвимости с помощью LLM
-func (analyzer *GenkitSecurityAnalyzer) verifyHypothesis(ctx context.Context, req *models.VerificationRequest) (*models.VerificationResponse, error) {
-	log.Printf("🔬 Starting verification for hypothesis: %s", req.ChecklistItem.Hypothesis)
+func (analyzer *GenkitSecurityAnalyzer) verifyHypothesis(
+	ctx context.Context,
+	req *models.VerificationRequest,
+	hypothesis string,
+) (*models.VerificationResponse, error) {
+	log.Printf("🔬 Starting verification for: %s", hypothesis)
 
 	// Шаг 1: LLM генерирует тестовые запросы на основе гипотезы
-	prompt := analyzer.buildVerificationPrompt(req)
+	prompt := analyzer.buildVerificationPrompt(req, hypothesis)
 
 	llmResponse, err := analyzer.llmProvider.GenerateVerificationPlan(ctx, &models.VerificationPlanRequest{
-		Hypothesis:       req.ChecklistItem.Hypothesis,
-		OriginalRequest:  req.OriginalRequest,
-		MaxAttempts:      req.MaxAttempts,
-		TargetURL:        req.OriginalRequest.URL,
-		AdditionalInfo:   prompt,
+		Hypothesis:      hypothesis,
+		OriginalRequest: req.OriginalRequest,
+		MaxAttempts:     req.MaxAttempts,
+		TargetURL:       req.OriginalRequest.URL,
+		AdditionalInfo:  prompt,
 	})
 
 	if err != nil {
 		return &models.VerificationResponse{
 			Status:            "inconclusive",
-			UpdatedConfidence: req.ChecklistItem.Confidence,
+			UpdatedConfidence: 0.5,
 			Reasoning:         fmt.Sprintf("Failed to generate verification plan: %v", err),
 			TestAttempts:      []models.TestAttempt{},
 		}, nil
@@ -519,26 +486,24 @@ func (analyzer *GenkitSecurityAnalyzer) verifyHypothesis(ctx context.Context, re
 
 	// Шаг 3: LLM анализирует результаты и определяет статус верификации
 	analysisResponse, err := analyzer.llmProvider.AnalyzeVerificationResults(ctx, &models.VerificationAnalysisRequest{
-		Hypothesis:        req.ChecklistItem.Hypothesis,
-		OriginalConfidence: req.ChecklistItem.Confidence,
-		TestResults:       successfulTests,
-		OriginalRequest:   req.OriginalRequest,
+		Hypothesis:         hypothesis,
+		OriginalConfidence: 0.5, // Default initial confidence
+		TestResults:        successfulTests,
+		OriginalRequest:    req.OriginalRequest,
 	})
 
 	if err != nil {
 		return &models.VerificationResponse{
 			Status:            "inconclusive",
-			UpdatedConfidence: req.ChecklistItem.Confidence,
+			UpdatedConfidence: 0.5,
 			Reasoning:         fmt.Sprintf("Failed to analyze verification results: %v", err),
 			TestAttempts:      testAttempts,
 		}, nil
 	}
 
-	log.Printf("🎯 Verification completed for hypothesis: %s - Status: %s",
-		req.ChecklistItem.Hypothesis, analysisResponse.Status)
+	log.Printf("🎯 Verification completed: %s - Status: %s", hypothesis, analysisResponse.Status)
 
 	return &models.VerificationResponse{
-		OriginalIndex:     req.ChecklistItem.OriginalIndex,
 		Status:            analysisResponse.Status,
 		UpdatedConfidence: analysisResponse.UpdatedConfidence,
 		Reasoning:         analysisResponse.Reasoning,
@@ -548,11 +513,13 @@ func (analyzer *GenkitSecurityAnalyzer) verifyHypothesis(ctx context.Context, re
 }
 
 // buildVerificationPrompt создает промпт для LLM с контекстом верификации
-func (analyzer *GenkitSecurityAnalyzer) buildVerificationPrompt(req *models.VerificationRequest) string {
+func (analyzer *GenkitSecurityAnalyzer) buildVerificationPrompt(
+	req *models.VerificationRequest,
+	hypothesis string,
+) string {
 	return fmt.Sprintf(`You are a security verification assistant. Your task is to verify a security hypothesis by generating and analyzing test requests.
 
 HYPOTHESIS TO VERIFY: %s
-CONFIDENCE LEVEL: %.2f
 TARGET: %s
 
 ORIGINAL REQUEST DETAILS:
@@ -569,8 +536,7 @@ VERIFICATION REQUIREMENTS:
 5. Consider both positive (vulnerable) and negative (secure) test cases
 
 Generate targeted test requests that can definitively prove or disprove this security hypothesis.`,
-		req.ChecklistItem.Hypothesis,
-		req.ChecklistItem.Confidence,
+		hypothesis,
 		req.OriginalRequest.URL,
 		req.OriginalRequest.Method,
 		req.OriginalRequest.URL,
