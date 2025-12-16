@@ -235,9 +235,9 @@ type VerificationAnalysisResponse struct {
 
 // BatchVerificationRequest запрос для батч-верификации нескольких findings
 type BatchVerificationRequest struct {
-	Findings        []FindingForBatchVerification    `json:"findings" jsonschema:"description=Findings to verify"`
-	OriginalRequest RequestResponseInfo              `json:"original_request" jsonschema:"description=Original HTTP request context"`
-	TestResults     []TestResultForBatchVerification `json:"test_results" jsonschema:"description=Results from test requests"`
+	Findings        []FindingForBatchVerification `json:"findings" jsonschema:"description=Findings to verify"`
+	OriginalRequest RequestResponseInfo           `json:"original_request" jsonschema:"description=Original HTTP request context"`
+	TestResults     []TestRequestForBatch         `json:"test_results" jsonschema:"description=Results from all test attempts"`
 }
 
 // FindingForBatchVerification информация о finding для батч-верификации
@@ -249,12 +249,20 @@ type FindingForBatchVerification struct {
 	ExpectedIfSafe       string `json:"expected_if_safe,omitempty" jsonschema:"description=Expected if safe"`
 }
 
-// TestResultForBatchVerification результат тестирования для батча
-type TestResultForBatchVerification struct {
-	FindingIndex int    `json:"finding_index" jsonschema:"description=Index of corresponding finding"`
+// TestRequestForBatch stores test results for a specific finding
+type TestRequestForBatch struct {
+	FindingURL   string           `json:"finding_url" jsonschema:"description=URL of the finding"`
+	FindingTitle string           `json:"finding_title" jsonschema:"description=Title of the finding"`
+	TestResults  []TestResultForBatch `json:"test_results" jsonschema:"description=Results of all tests for this finding"`
+}
+
+// TestResultForBatch is the result of ONE test attempt
+type TestResultForBatch struct {
+	TestIndex    int    `json:"test_index" jsonschema:"description=Index of test in the array"`
 	StatusCode   int    `json:"status_code" jsonschema:"description=Response status code"`
 	ResponseBody string `json:"response_body" jsonschema:"description=Response body (truncated)"`
 	Error        string `json:"error,omitempty" jsonschema:"description=Error if test failed"`
+	Purpose      string `json:"purpose" jsonschema:"description=What this test was checking"`
 }
 
 // BatchVerificationResult результат батч-верификации
