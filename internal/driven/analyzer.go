@@ -46,6 +46,11 @@ type GenkitSecurityAnalyzer struct {
 
 	// URL Analysis cache (90% LLM reduction)
 	urlCache *URLAnalysisCache
+
+	// Enhanced SiteContext tracking
+	formExtractor   *utils.FormExtractor
+	crudMapper      *utils.CRUDMapper
+	temporalTracker *utils.TemporalTracker
 }
 
 // NewGenkitSecurityAnalyzer создаёт анализатор с кастомным LLM провайдером
@@ -63,6 +68,9 @@ func NewGenkitSecurityAnalyzer(
 		contextManager: NewSiteContextManager(),
 		requestFilter:  utils.NewRequestFilter(),
 		urlCache:       NewURLAnalysisCache(1000), // Кэш на 1000 URL паттернов
+		formExtractor:   utils.NewFormExtractor(),
+		crudMapper:      utils.NewCRUDMapper(),
+		temporalTracker: utils.NewTemporalTracker(),
 	}
 
 	// Инициализация data extractor
@@ -219,7 +227,39 @@ func (analyzer *GenkitSecurityAnalyzer) AnalyzeHTTPTraffic(
 	// 2. Получаем/создаем контекст сайта (LLM будет использовать его для принятия решений)
 	siteContext := analyzer.getOrCreateSiteContext(req.URL.Host)
 
-	// 3. Unified анализ через один orchestration flow
+	// 3. Enhanced SiteContext tracking - collect data for LLM context
+	startTime := time.Now()
+
+	// Track temporal request history
+	if err := analyzer.temporalTracker.TrackRequest(
+		siteContext,
+		req.Method,
+		req.URL.Path,
+		resp.StatusCode,
+		int64(time.Since(startTime).Nanoseconds()/1e6), // duration in ms
+		req.Referer(),
+	); err != nil {
+		log.Printf("⚠️ Failed to track temporal request: %v", err)
+	}
+
+	// Extract forms from HTML responses
+	if strings.Contains(contentType, "html") && respBody != "" {
+		forms := analyzer.formExtractor.ExtractForms(respBody)
+		for _, form := range forms {
+			// Add form to site context (avoid duplicates)
+			if _, exists := siteContext.Forms[form.FormID]; !exists {
+				form.FirstSeen = time.Now().Unix()
+				siteContext.Forms[form.FormID] = form
+				log.Printf("📋 Extracted form: %s %s (Fields: %d, CSRF: %v)",
+					form.Method, form.Action, len(form.Fields), form.HasCSRFToken)
+			}
+		}
+	}
+
+	// Map CRUD operations for API requests
+	analyzer.crudMapper.UpdateResourceMapping(siteContext, req.Method, req.URL.String())
+
+	// 4. Unified анализ через один orchestration flow
 	//    Quick Analysis всегда выполняется - LLM сам решает нужен ли Full Analysis
 	//    на основе контекста сайта и подозрительных паттернов
 
@@ -245,10 +285,10 @@ func (analyzer *GenkitSecurityAnalyzer) AnalyzeHTTPTraffic(
 		return err
 	}
 
-	// 4. Отправляем результат в WebSocket
+	// 5. Отправляем результат в WebSocket
 	analyzer.broadcastAnalysisResult(req, resp, securityAnalysis, reqBody, respBody)
 
-	// 5. Логируем результат
+	// 6. Логируем результат
 	if securityAnalysis != nil && securityAnalysis.HasVulnerability {
 		log.Printf(
 			"🔬 Полный анализ завершен для %s %s (риск: %s)",
