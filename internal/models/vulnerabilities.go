@@ -13,13 +13,31 @@ type VulnerabilityReport struct {
 
 // SecurityAnalysisResponse структурированный ответ от LLM (только данные для анализа)
 type SecurityAnalysisResponse struct {
-	HasVulnerability   bool                `json:"has_vulnerability" jsonschema:"description=Indicates if a vulnerability was found"`
-	RiskLevel          string              `json:"risk_level" jsonschema:"enum=low,enum=medium,enum=high,enum=critical,description=Risk level assessment"`
-	AIComment          string              `json:"ai_comment" jsonschema:"description=AI analysis comment and explanation"`
-	SecurityChecklist  []SecurityCheckItem `json:"security_checklist,omitempty" jsonschema:"description=Manual verification checklist for found vulnerabilities"`
-	VulnerabilityTypes []string            `json:"vulnerability_types,omitempty" jsonschema:"description=List of detected vulnerability types"`
-	ConfidenceScore    float64             `json:"confidence_score,omitempty" jsonschema:"description=Confidence in analysis (0.0-1.0),minimum=0,maximum=1"`
-	ExtractedSecrets   []ExtractedSecret   `json:"extracted_secrets,omitempty" jsonschema:"description=Found secrets and sensitive data"`
+	Summary         string          `json:"summary" jsonschema:"description=One sentence summary of the endpoint"`
+	Findings        []Finding       `json:"findings" jsonschema:"description=List of findings (max 5)"`
+	ContextForLater ContextForLater `json:"context_for_later" jsonschema:"description=Context for future analysis"`
+}
+
+// Finding - конкретная находка/проверка
+type Finding struct {
+	Title                string      `json:"title" jsonschema:"description=Short title (concrete, not generic)"`
+	Observation          string      `json:"observation" jsonschema:"description=What is visible in the traffic"`
+	TestRequest          TestRequest `json:"test_request" jsonschema:"description=Test request to verify"`
+	ExpectedIfVulnerable string      `json:"expected_if_vulnerable" jsonschema:"description=What we'll see if vulnerable"`
+	ExpectedIfSafe       string      `json:"expected_if_safe" jsonschema:"description=What we'll see if protected"`
+	Effort               string      `json:"effort" jsonschema:"enum=low,enum=medium,enum=high,description=Effort to test"`
+	Impact               string      `json:"impact" jsonschema:"enum=low,enum=medium,enum=high,enum=critical,description=Impact if exploited"`
+
+	// Verification results
+	VerificationStatus string `json:"verification_status,omitempty" jsonschema:"enum=verified,enum=likely_false,enum=inconclusive,enum=manual_check,description=Auto-verification status"`
+	VerificationReason string `json:"verification_reason,omitempty" jsonschema:"description=Why this status was assigned"`
+}
+
+// ContextForLater - контекст для дальнейшего анализа
+type ContextForLater struct {
+	IdentifiedPatterns []string `json:"identified_patterns,omitempty" jsonschema:"description=Patterns identified for SiteContext"`
+	RelatedEndpoints   []string `json:"related_endpoints,omitempty" jsonschema:"description=Related endpoints if visible"`
+	UserRoleDetected   string   `json:"user_role_detected,omitempty" jsonschema:"enum=guest,enum=user,enum=admin,enum=unknown,description=User role detected"`
 }
 
 // SecurityCheckItem - элемент чеклиста для пентестера
@@ -106,26 +124,48 @@ type URLAnalysisRequest struct {
 
 // URLAnalysisResponse ответ быстрой оценки URL
 type URLAnalysisResponse struct {
-	URLNote       *URLNote `json:"url_note" jsonschema:"description=AI-generated note about this URL"`
-	ShouldAnalyze bool     `json:"should_analyze" jsonschema:"description=Whether this URL deserves full security analysis"`
-	Priority      string   `json:"priority" jsonschema:"enum=low,enum=medium,enum=high,description=Analysis priority"`
+	InterestLevel   string           `json:"interest_level" jsonschema:"enum=high,enum=medium,enum=low,description=Interest level for analysis"`
+	EndpointType    string           `json:"endpoint_type" jsonschema:"enum=auth,enum=api,enum=admin,enum=crud,enum=static,enum=unknown,description=Type of endpoint"`
+	Observations    []string         `json:"observations" jsonschema:"description=Concrete observations from request/response"`
+	SuggestedChecks []SuggestedCheck `json:"suggested_checks" jsonschema:"description=What to check and how"`
+	DetectedTech    DetectedTech     `json:"detected_tech" jsonschema:"description=Detected technologies"`
+	Tags            []string         `json:"tags" jsonschema:"description=Tags for grouping"`
+	URLNote         *URLNote         `json:"url_note" jsonschema:"description=AI-generated note about this URL"`
+}
+
+// SuggestedCheck - проверка для выполнения
+type SuggestedCheck struct {
+	What string `json:"what" jsonschema:"description=What to check"`
+	How  string `json:"how" jsonschema:"description=How to check (concrete request)"`
+	Why  string `json:"why" jsonschema:"description=Why this is interesting"`
+}
+
+// DetectedTech - обнаруженные технологии
+type DetectedTech struct {
+	Database string `json:"database" jsonschema:"description=Detected database"`
+	Backend  string `json:"backend" jsonschema:"description=Detected backend framework"`
+	Evidence string `json:"evidence" jsonschema:"description=Evidence for detection"`
 }
 
 // HypothesisRequest запрос для генерации гипотезы
 type HypothesisRequest struct {
-	SiteContext         *SiteContext        `json:"site_context" jsonschema:"description=Current site context"`
-	SuspiciousPatterns  []*URLPattern       `json:"suspicious_patterns" jsonschema:"description=Suspicious URL patterns"`
-	TechVulnerabilities []string            `json:"tech_vulnerabilities" jsonschema:"description=Known vulnerabilities in detected tech"`
-	PreviousHypothesis  *SecurityHypothesis `json:"previous_hypothesis,omitempty" jsonschema:"description=Previous hypothesis for comparison"`
+	SiteContext           *SiteContext           `json:"site_context" jsonschema:"description=Current site context"`
+	SuspiciousPatterns    []*URLPattern          `json:"suspicious_patterns" jsonschema:"description=Suspicious URL patterns"`
+	TechVulnerabilities   []string               `json:"tech_vulnerabilities" jsonschema:"description=Known vulnerabilities in detected tech"`
+	PreviousHypothesis    *SecurityHypothesis    `json:"previous_hypothesis,omitempty" jsonschema:"description=Previous hypothesis for comparison"`
+	VerificationResults   *VerificationSummary   `json:"verification_results,omitempty" jsonschema:"description=Results from verification phase"`
+	CrossEndpointPatterns []CrossEndpointPattern `json:"cross_endpoint_patterns,omitempty" jsonschema:"description=Patterns affecting multiple endpoints"`
 }
 
-// HypothesisResponse ответ с генерированными гипотезами
-type HypothesisResponse struct {
-	AttackVectors []*SecurityHypothesis `json:"attack_vectors" jsonschema:"description=List of possible attack vectors sorted by priority"`
-	Reasoning     string                `json:"reasoning" jsonschema:"description=AI reasoning behind the hypothesis"`
+// VerificationSummary итоговая информация о результатах верификации
+type VerificationSummary struct {
+	TotalPatternsAnalyzed int      `json:"total_patterns_analyzed" jsonschema:"description=Total findings analyzed"`
+	ConfirmedVulnerable   int      `json:"confirmed_vulnerable" jsonschema:"description=Findings confirmed as vulnerable"`
+	ConfirmedSafe         int      `json:"confirmed_safe" jsonschema:"description=Findings confirmed as safe"`
+	Inconclusive          int      `json:"inconclusive" jsonschema:"description=Inconclusive findings"`
+	HighConfidenceMatches []string `json:"high_confidence_matches" jsonschema:"description=High confidence vulnerability matches"`
+	RepeatingPatterns     []string `json:"repeating_patterns" jsonschema:"description=Patterns seen on multiple endpoints"`
 }
-
-// Verification-related models for LLM-based verification
 
 // VerificationPlanRequest запрос к LLM для генерации плана верификации
 type VerificationPlanRequest struct {
@@ -144,11 +184,37 @@ type VerificationPlanResponse struct {
 
 // TestRequest структура тестового запроса (для LLM)
 type TestRequest struct {
-	URL     string            `json:"url" jsonschema:"description=Test request URL"`
-	Method  string            `json:"method" jsonschema:"description=HTTP method"`
-	Headers map[string]string `json:"headers,omitempty" jsonschema:"description=Request headers"`
-	Body    string            `json:"body,omitempty" jsonschema:"description=Request body (for POST/PUT)"`
-	Purpose string            `json:"purpose" jsonschema:"description=Purpose of this test request"`
+	URL                  string            `json:"url" jsonschema:"description=Test request URL"`
+	Method               string            `json:"method" jsonschema:"description=HTTP method"`
+	Headers              map[string]string `json:"headers,omitempty" jsonschema:"description=Request headers"`
+	Body                 string            `json:"body,omitempty" jsonschema:"description=Request body (for POST/PUT)"`
+	Purpose              string            `json:"purpose" jsonschema:"description=What this specific test checks"`
+	ExpectedIfVulnerable string            `json:"expected_if_vulnerable,omitempty" jsonschema:"description=Expected response if vulnerable"`
+	ExpectedIfSafe       string            `json:"expected_if_safe,omitempty" jsonschema:"description=Expected response if protected"`
+}
+
+// TestResult результат выполнения тестового запроса
+type TestResult struct {
+	StatusCode   int
+	ResponseBody string
+	Headers      map[string]string
+	Duration     time.Duration
+	Error        string
+}
+
+// RequestData данные HTTP запроса
+type RequestData struct {
+	Method  string
+	URL     string
+	Headers map[string]string
+	Body    string
+}
+
+// ResponseData данные HTTP ответа
+type ResponseData struct {
+	StatusCode int
+	Headers    map[string]string
+	Body       string
 }
 
 // VerificationAnalysisRequest запрос к LLM для анализа результатов верификации
@@ -165,4 +231,47 @@ type VerificationAnalysisResponse struct {
 	UpdatedConfidence float64 `json:"updated_confidence" jsonschema:"description=Updated confidence score (0.0-1.0)"`
 	Reasoning         string  `json:"reasoning" jsonschema:"description=LLM reasoning about verification results"`
 	RecommendedPOC    string  `json:"recommended_poc,omitempty" jsonschema:"description=Recommended manual proof of concept"`
+}
+
+// BatchVerificationRequest запрос для батч-верификации нескольких findings
+type BatchVerificationRequest struct {
+	Findings        []FindingForBatchVerification    `json:"findings" jsonschema:"description=Findings to verify"`
+	OriginalRequest RequestResponseInfo              `json:"original_request" jsonschema:"description=Original HTTP request context"`
+	TestResults     []TestResultForBatchVerification `json:"test_results" jsonschema:"description=Results from test requests"`
+}
+
+// FindingForBatchVerification информация о finding для батч-верификации
+type FindingForBatchVerification struct {
+	Index                int    `json:"index" jsonschema:"description=Index in findings array"`
+	Title                string `json:"title" jsonschema:"description=Finding title"`
+	Observation          string `json:"observation" jsonschema:"description=What is visible"`
+	ExpectedIfVulnerable string `json:"expected_if_vulnerable,omitempty" jsonschema:"description=Expected if vulnerable"`
+	ExpectedIfSafe       string `json:"expected_if_safe,omitempty" jsonschema:"description=Expected if safe"`
+}
+
+// TestResultForBatchVerification результат тестирования для батча
+type TestResultForBatchVerification struct {
+	FindingIndex int    `json:"finding_index" jsonschema:"description=Index of corresponding finding"`
+	StatusCode   int    `json:"status_code" jsonschema:"description=Response status code"`
+	ResponseBody string `json:"response_body" jsonschema:"description=Response body (truncated)"`
+	Error        string `json:"error,omitempty" jsonschema:"description=Error if test failed"`
+}
+
+// BatchVerificationResult результат батч-верификации
+type BatchVerificationResult struct {
+	BatchResults []FindingVerificationResult `json:"batch_results" jsonschema:"description=Results for each finding"`
+}
+
+// FindingVerificationResult результат верификации одного finding
+type FindingVerificationResult struct {
+	FindingIndex int     `json:"finding_index" jsonschema:"description=Index of finding"`
+	Status       string  `json:"status" jsonschema:"enum=verified,enum=likely_true,enum=likely_false,enum=inconclusive,description=Verification status"`
+	Confidence   float64 `json:"confidence" jsonschema:"description=Confidence score (0.0-1.0)"`
+	Reasoning    string  `json:"reasoning" jsonschema:"description=Detailed reasoning"`
+}
+
+// HypothesisResponse - ответ на запрос генерации гипотез
+type HypothesisResponse struct {
+	InvestigationSuggestions []InvestigationSuggestion `json:"investigation_suggestions" jsonschema:"description=Suggested investigations"`
+	SiteUnderstanding        SiteUnderstanding         `json:"site_understanding" jsonschema:"description=Understanding of the site"`
 }
