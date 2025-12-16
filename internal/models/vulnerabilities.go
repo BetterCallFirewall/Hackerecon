@@ -48,7 +48,7 @@ type VerificationResponse struct {
 	UpdatedConfidence float64       `json:"updated_confidence" jsonschema:"description=Updated confidence score (0.0-1.0)"`
 	Reasoning         string        `json:"reasoning" jsonschema:"description=LLM reasoning about verification results"`
 	TestAttempts      []TestAttempt `json:"test_attempts,omitempty" jsonschema:"description=Test attempts performed"`
-	RecommendedPOC    string        `json:"recommended_poc,omitempty" jsonschema:"description:Recommended manual POC if needed"`
+	RecommendedPOC    string        `json:"recommended_poc,omitempty" jsonschema:"description=Recommended manual POC if needed"`
 }
 
 // TestAttempt - одна попытка верификации
