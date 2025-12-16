@@ -20,13 +20,13 @@ type SecurityAnalysisResponse struct {
 
 // Finding - конкретная находка/проверка
 type Finding struct {
-	Title                string      `json:"title" jsonschema:"description=Short title (concrete, not generic)"`
-	Observation          string      `json:"observation" jsonschema:"description=What is visible in the traffic"`
-	TestRequest          TestRequest `json:"test_request" jsonschema:"description=Test request to verify"`
-	ExpectedIfVulnerable string      `json:"expected_if_vulnerable" jsonschema:"description=What we'll see if vulnerable"`
-	ExpectedIfSafe       string      `json:"expected_if_safe" jsonschema:"description=What we'll see if protected"`
-	Effort               string      `json:"effort" jsonschema:"enum=low,enum=medium,enum=high,description=Effort to test"`
-	Impact               string      `json:"impact" jsonschema:"enum=low,enum=medium,enum=high,enum=critical,description=Impact if exploited"`
+	Title                string        `json:"title" jsonschema:"description=Short title (concrete, not generic)"`
+	Observation          string        `json:"observation" jsonschema:"description=What is visible in the traffic"`
+	TestRequests         []TestRequest `json:"test_requests" jsonschema:"description=List of test requests (1-5)"`
+	ExpectedIfVulnerable string        `json:"expected_if_vulnerable" jsonschema:"description=What we'll see if vulnerable"`
+	ExpectedIfSafe       string        `json:"expected_if_safe" jsonschema:"description=What we'll see if protected"`
+	Effort               string        `json:"effort" jsonschema:"enum=low,enum=medium,enum=high,description=Effort to test"`
+	Impact               string        `json:"impact" jsonschema:"enum=low,enum=medium,enum=high,enum=critical,description=Impact if exploited"`
 
 	// Verification results
 	VerificationStatus string `json:"verification_status,omitempty" jsonschema:"enum=verified,enum=likely_false,enum=inconclusive,enum=manual_check,description=Auto-verification status"`
