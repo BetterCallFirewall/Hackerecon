@@ -178,3 +178,26 @@ func (p *SimpleGenkitProvider) AnalyzeVerificationResults(
 
 	return result, nil
 }
+
+// AnalyzeBatchVerification анализирует батч нескольких findings одновременно
+// Это оптимизирует LLM вызовы: вместо N отдельных запросов делает 1 батч запрос
+func (p *SimpleGenkitProvider) AnalyzeBatchVerification(
+	ctx context.Context,
+	req *models.BatchVerificationRequest,
+) (*models.BatchVerificationResult, error) {
+	prompt := BuildBatchVerificationPrompt(req)
+
+	result, _, err := genkit.GenerateData[models.BatchVerificationResult](
+		ctx,
+		p.genkitApp,
+		ai.WithModelName(p.modelName),
+		ai.WithPrompt(prompt),
+		ai.WithMiddleware(getMiddlewares()...),
+	)
+
+	if err != nil {
+		return nil, fmt.Errorf("batch verification analysis failed: %w", err)
+	}
+
+	return result, nil
+}
