@@ -8,6 +8,33 @@ import (
 	"time"
 )
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// Global InMemoryGraph Reference for Tool Access
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Global in-memory graph reference for tool handlers
+// Used by getExchange tool to retrieve HTTP exchanges
+var (
+	globalGraph *InMemoryGraph
+	globalMutex sync.RWMutex
+)
+
+// SetGlobalInMemoryGraph sets the global InMemoryGraph reference
+// Must be called during analyzer initialization before any tool calls
+func SetGlobalInMemoryGraph(graph *InMemoryGraph) {
+	globalMutex.Lock()
+	defer globalMutex.Unlock()
+	globalGraph = graph
+}
+
+// GetGlobalInMemoryGraph returns the current global InMemoryGraph reference
+func GetGlobalInMemoryGraph() *InMemoryGraph {
+	globalMutex.RLock()
+	defer globalMutex.RUnlock()
+	return globalGraph
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // InMemoryGraph stores all analysis data in memory
 // Provides thread-safe storage for all detective flow entities
 type InMemoryGraph struct {

@@ -48,7 +48,7 @@ func BuildUnifiedAnalysisPrompt(req *UnifiedAnalysisRequest) string {
 	if headers != "(none)" {
 		prompt += fmt.Sprintf("- Headers:\n  %s\n", headers)
 	}
-	prompt += fmt.Sprintf("- Body: %s\n", TruncateString(req.Exchange.Response.Body, 1000))
+	prompt += fmt.Sprintf("- Body: %s\n", TruncateString(req.Exchange.Response.Body, 500))
 
 	// BigPicture context (optional)
 	prompt += "\n**Site Context (BigPicture):**\n"

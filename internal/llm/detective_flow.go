@@ -16,10 +16,11 @@ import (
 
 // DetectiveAIRequest represents input for the detective AI orchestration flow
 type DetectiveAIRequest struct {
-	Exchange           models.HTTPExchange  `json:"exchange"`
-	BigPicture         *models.BigPicture   `json:"big_picture,omitempty"`
-	RecentObservations []models.Observation `json:"recent_observations,omitempty"`
-	RecentLeads        []models.Lead        `json:"recent_leads,omitempty"` // NEW: for deduplication
+	Exchange           models.HTTPExchange   `json:"exchange"`
+	BigPicture         *models.BigPicture    `json:"big_picture,omitempty"`
+	RecentObservations []models.Observation  `json:"recent_observations,omitempty"`
+	RecentLeads        []models.Lead         `json:"recent_leads,omitempty"` // for deduplication
+	Graph              *models.InMemoryGraph `json:"-"`                      // InMemoryGraph for getExchange tool (not serialized)
 }
 
 // DetectiveAIResult represents the complete output from detective AI analysis
@@ -71,8 +72,10 @@ func DefineDetectiveAIFlow(
 				return nil, fmt.Errorf("unified analysis failed: %w", err)
 			}
 
-			log.Printf("✅ Unified analysis complete: comment=%s, observations_count=%d",
-				unifiedResp.Comment, len(unifiedResp.Observations))
+			log.Printf(
+				"✅ Unified analysis complete: comment=%s, observations_count=%d",
+				unifiedResp.Comment, len(unifiedResp.Observations),
+			)
 
 			// ═══════════════════════════════════════════════════════════════════════════════
 			// Step 2: Reflection (filters observations, finds connections)
@@ -104,8 +107,10 @@ func DefineDetectiveAIFlow(
 					finalObservations = reflectionResp.Observations
 					// Merge connections from both phases
 					allConnections = append(unifiedResp.Connections, reflectionResp.Connections...)
-					log.Printf("✅ Reflection complete: observations_count=%d, connections_count=%d",
-						len(finalObservations), len(reflectionResp.Connections))
+					log.Printf(
+						"✅ Reflection complete: observations_count=%d, connections_count=%d",
+						len(finalObservations), len(reflectionResp.Connections),
+					)
 				}
 			} else {
 				finalObservations = unifiedResp.Observations
@@ -130,13 +135,16 @@ func DefineDetectiveAIFlow(
 				}
 
 				if len(significantObs) > 0 {
-					log.Printf("💡 Found %d significant observation(s) out of %d total, generating batch leads...",
-						len(significantObs), len(finalObservations))
+					log.Printf(
+						"💡 Found %d significant observation(s) out of %d total, generating batch leads...",
+						len(significantObs), len(finalObservations),
+					)
 
 					leadReq := &LeadGenerationRequest{
-						Observations:  significantObs,  // Batch mode: all significant observations
-						ExistingLeads: req.RecentLeads, // NEW: for deduplication
+						Observations:  significantObs, // Batch mode: all significant observations
+						ExistingLeads: req.RecentLeads,
 						BigPicture:    req.BigPicture,
+						Graph:         req.Graph, // InMemoryGraph for getExchange tool
 					}
 
 					leadResult, err := genkit.Run(
@@ -180,8 +188,10 @@ func DefineDetectiveAIFlow(
 				Leads:            allLeads,
 			}
 
-			log.Printf("🎯 Detective AI flow complete: observations_count=%d, leads_count=%d",
-				len(result.Observations), len(result.Leads))
+			log.Printf(
+				"🎯 Detective AI flow complete: observations_count=%d, leads_count=%d",
+				len(result.Observations), len(result.Leads),
+			)
 
 			return result, nil
 		},

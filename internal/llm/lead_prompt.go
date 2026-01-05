@@ -14,10 +14,11 @@ import (
 // Supports both single observation (backward compatibility) and batch mode
 // Now includes existing leads for deduplication (many-to-many relationship)
 type LeadGenerationRequest struct {
-	Observation   models.Observation   `json:"observation,omitempty" jsonschema:"description=Single observation (deprecated, use observations)"`
-	Observations  []models.Observation `json:"observations" jsonschema:"description=Observations to generate leads from (batch mode)"`
-	ExistingLeads []models.Lead        `json:"existing_leads,omitempty" jsonschema:"description=Existing leads for deduplication (LLM should reuse these instead of creating duplicates)"`
-	BigPicture    *models.BigPicture   `json:"big_picture,omitempty" jsonschema:"description=Current understanding of target application,nullable"`
+	Observation   models.Observation    `json:"observation,omitempty" jsonschema:"description=Single observation (deprecated, use observations)"`
+	Observations  []models.Observation  `json:"observations" jsonschema:"description=Observations to generate leads from (batch mode)"`
+	ExistingLeads []models.Lead         `json:"existing_leads,omitempty" jsonschema:"description=Existing leads for deduplication (LLM should reuse these instead of creating duplicates)"`
+	BigPicture    *models.BigPicture    `json:"big_picture,omitempty" jsonschema:"description=Current understanding of target application,nullable"`
+	Graph         *models.InMemoryGraph `json:"-"` // InMemoryGraph for getExchange tool (not serialized)
 }
 
 // LeadData represents a single lead with all its details
@@ -92,6 +93,30 @@ func BuildLeadGenerationPrompt(req *LeadGenerationRequest) string {
 		prompt += "If an existing lead is conceptually equivalent, do NOT create a duplicate - instead create a connection to the existing lead.\n"
 	}
 
+	// Available tools section (NEW - getExchange tool)
+	prompt += "\n## Available Tools\n\n"
+	prompt += "You have access to the **getExchange** tool.\n\n"
+	prompt += "**⚠️ MANDATORY USAGE:**\n"
+	prompt += "You **MUST** call getExchange() for EVERY observation before generating a lead.\n"
+	prompt += "Leads generated WITHOUT examining the actual HTTP exchange will be REJECTED.\n\n"
+	prompt += "**When to use it:**\n"
+	prompt += "- ALWAYS before generating a lead (to see exact headers, URLs, body format)\n"
+	prompt += "- When you need to understand authentication headers\n"
+	prompt += "- When observation mentions specific parameters or values\n"
+	prompt += "- To craft accurate PoCs with exact syntax\n\n"
+	prompt += "**How to use:**\n"
+	prompt += "Call getExchange(exchangeID) where exchangeID comes from Observation.ExchangeID field\n\n"
+	prompt += "**Example:**\n"
+	prompt += "```\n"
+	prompt += "Observation: \"Cookie header contains weak session token (session=abc123)\"\n"
+	prompt += "ExchangeID: \"exch-456\"\n\n"
+	prompt += "Step 1: Call getExchange(\"exch-456\")\n"
+	prompt += "Returns: Full HTTP request with all headers, body, URL\n\n"
+	prompt += "Step 2: Use this information to craft accurate PoC:\n"
+	prompt += "curl -X GET 'https://...' -H 'Cookie: session=abc123' ...\n"
+	prompt += "```\n\n"
+	prompt += "**Remember:** ALWAYS examine the actual HTTP exchange before writing PoCs. Generic PoCs without exact headers/values are not useful.\n\n"
+
 	// BigPicture context (optional)
 	if req.BigPicture != nil {
 		prompt += "\n**Site Context (Big Picture):**\n"
@@ -157,19 +182,48 @@ func BuildLeadGenerationPrompt(req *LeadGenerationRequest) string {
 
 	// Rules section - emphasis on human-readable PoCs and deduplication
 	prompt += "\n\n## Rules\n\n"
-	prompt += "1. **Check existing leads FIRST** - Before creating new leads, review existing leads for duplicates\n"
-	prompt += "2. **No duplicate leads** - If an existing lead is conceptually equivalent (same testing approach), reuse it via connection\n"
-	prompt += "3. **Many-to-many is OK** - One lead can relate to multiple observations, one observation can have multiple leads\n"
-	prompt += "4. **Connection IDs** - Use actual entity IDs (obs-*, lead-*) in connections\n"
-	prompt += "5. **Each PoC must have both payload AND comment** - both fields are required, never omit comment\n"
-	prompt += "6. **Each lead must be actionable** - specific step, not generic advice\n"
-	prompt += "7. **Human-readable PoCs** - provide clear instructions, NOT raw JSON payloads\n"
-	prompt += "8. **Multiple PoC formats** - use curl commands, step-by-step instructions, or descriptions\n"
-	prompt += "9. **Be concrete** - exact changes to make or commands to run\n"
-	prompt += "10. **CRITICAL: Use the Hint field** - If observation.Hint is provided and contains specific guidance (e.g., \"try MongoDB operators\", \"test XSS with\", \"attempt SQL injection\"), you MUST generate at least one lead that follows this hint exactly. The hint contains expert security guidance that should take priority over generic approaches.\n"
+	prompt += "1. **⚠️ ALWAYS call getExchange FIRST** - Before generating ANY lead, you MUST call getExchange() to examine the actual HTTP request/response. Leads created without examining the exchange will be low-quality and may be rejected.\n"
+	prompt += "2. **Check existing leads FIRST** - Before creating new leads, review existing leads for duplicates\n"
+	prompt += "3. **No duplicate leads** - If an existing lead is conceptually equivalent (same testing approach), reuse it via connection\n"
+	prompt += "4. **Many-to-many is OK** - One lead can relate to multiple observations, one observation can have multiple leads\n"
+	prompt += "5. **Connection IDs** - Use actual entity IDs (obs-*, lead-*) in connections\n"
+	prompt += "6. **Each PoC must have both payload AND comment** - both fields are required, never omit comment\n"
+	prompt += "7. **Each lead must be actionable** - specific step, not generic advice\n"
+	prompt += "8. **Human-readable PoCs** - provide clear instructions, NOT raw JSON payloads\n"
+	prompt += "9. **Multiple PoC formats** - use curl commands, step-by-step instructions, or descriptions\n"
+	prompt += "10. **Be concrete** - exact changes to make or commands to run\n"
+	prompt += "11. **CRITICAL: Use the Hint field** - If observation.Hint is provided and contains specific guidance (e.g., \"try MongoDB operators\", \"test XSS with\", \"attempt SQL injection\"), you MUST generate at least one lead that follows this hint exactly. The hint contains expert security guidance that should take priority over generic approaches.\n"
 
 	// Examples section - show new connection-based format
 	prompt += "\n## Examples\n\n"
+
+	prompt += "**Example 0: Proper workflow with getExchange tool**\n"
+	prompt += "Input:\n"
+	prompt += "- Observation (ID: obs-1): \"Cookie header contains session token\"\n"
+	prompt += "- ExchangeID: \"exch-123\"\n\n"
+	prompt += "Workflow:\n"
+	prompt += "1. **CALL TOOL FIRST**: getExchange(\"exch-123\")\n"
+	prompt += "   - Returns: Full HTTP request with Cookie: session=abc123def456\n"
+	prompt += "   - URL: https://api.example.com/user/profile\n"
+	prompt += "   - Headers: Authorization: Bearer tokenxyz...\n\n"
+	prompt += "2. **GENERATE LEAD** using actual data from exchange:\n"
+	prompt += "Output:\n"
+	prompt += "{\n"
+	prompt += `  "leads": [` + "\n"
+	prompt += `    {` + "\n"
+	prompt += `      "is_actionable": true,` + "\n"
+	prompt += `      "title": "Test session token fixation",` + "\n"
+	prompt += `      "actionable_step": "Reuse session cookie from different IP",` + "\n"
+	prompt += `      "pocs": [` + "\n"
+	prompt += `        {"payload": "curl -X GET 'https://api.example.com/user/profile' -H 'Cookie: session=abc123def456'",` + "\n"
+	prompt += `          "comment": "Reuse captured session token"}` + "\n"
+	prompt += `      ]` + "\n"
+	prompt += `    }` + "\n"
+	prompt += `  ],` + "\n"
+	prompt += `  "connections": [` + "\n"
+	prompt += `    {"id1": "obs-1", "id2": "lead-1", "reason": "Observation indicates session token in cookie"}` + "\n"
+	prompt += `  ]` + "\n"
+	prompt += "}\n\n"
 
 	prompt += "**Example 1: New lead connecting to multiple observations**\n"
 	prompt += "Input: 2 observations about file enumeration, no existing leads\n\n"

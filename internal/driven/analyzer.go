@@ -34,6 +34,9 @@ func NewGenkitSecurityAnalyzer(
 	modelName string,
 	wsHub *websocket.WebsocketManager,
 ) *GenkitSecurityAnalyzer {
+	// Define tools FIRST (before flows that use them)
+	llm.DefineGetExchangeTool(genkitApp)
+
 	// Create atomic flows
 	unifiedFlow := llm.DefineUnifiedAnalysisFlow(genkitApp, modelName)
 	reflectionFlow := llm.DefineReflectionFlow(genkitApp, modelName)
@@ -53,9 +56,17 @@ func NewGenkitSecurityAnalyzer(
 		},
 	)
 
+	// Create in-memory graph
+	graph := models.NewInMemoryGraph()
+
+	// Set global graph reference for tool handlers (e.g., getExchange)
+	// Must be set before any tool calls can happen
+	models.SetGlobalInMemoryGraph(graph)
+	log.Printf("✅ Global InMemoryGraph reference set for tool access")
+
 	return &GenkitSecurityAnalyzer{
 		detectiveAIFlow: detectiveFlow,
-		graph:           models.NewInMemoryGraph(),
+		graph:           graph,
 		wsHub:           wsHub,
 	}
 }
@@ -104,13 +115,15 @@ func (a *GenkitSecurityAnalyzer) AnalyzeHTTPTraffic(
 	exchangeForLLM := a.prepareExchangeForLLM(exchange)
 
 	// STEP 3: SINGLE AI orchestration flow (unified + lead)
-	// This replaces the old 5-phase pipeline
-	aiResult, err := a.detectiveAIFlow.Run(ctx, &llm.DetectiveAIRequest{
-		Exchange:           exchangeForLLM,
-		BigPicture:         a.graph.GetBigPicture(),
-		RecentObservations: a.getAllObservations(),
-		RecentLeads:        a.graph.GetRecentLeads(20),
-	})
+	aiResult, err := a.detectiveAIFlow.Run(
+		ctx, &llm.DetectiveAIRequest{
+			Exchange:           exchangeForLLM,
+			BigPicture:         a.graph.GetBigPicture(),
+			RecentObservations: a.getAllObservations(),
+			RecentLeads:        a.graph.GetRecentLeads(20),
+			Graph:              a.graph, // InMemoryGraph for getExchange tool
+		},
+	)
 	if err != nil {
 		return fmt.Errorf("detective AI failed: %w", err)
 	}
@@ -121,17 +134,19 @@ func (a *GenkitSecurityAnalyzer) AnalyzeHTTPTraffic(
 
 	// STEP 5: SINGLE WebSocket message
 	// Replaces multiple broadcasts from old flow
-	a.wsHub.Broadcast(websocket.DetectiveDTO{
-		ExchangeID:   exchangeID,
-		Method:       method,
-		URL:          url,
-		StatusCode:   statusCode,
-		Comment:      aiResult.Comment,
-		Observations: aiResult.Observations,
-		Connections:  aiResult.Connections,
-		BigPicture:   a.graph.GetBigPicture(),
-		Leads:        aiResult.Leads,
-	})
+	a.wsHub.Broadcast(
+		websocket.DetectiveDTO{
+			ExchangeID:   exchangeID,
+			Method:       method,
+			URL:          url,
+			StatusCode:   statusCode,
+			Comment:      aiResult.Comment,
+			Observations: aiResult.Observations,
+			Connections:  aiResult.Connections,
+			BigPicture:   a.graph.GetBigPicture(),
+			Leads:        aiResult.Leads,
+		},
+	)
 
 	log.Printf("✅ Analysis complete for %s %s", method, url)
 	return nil
@@ -159,7 +174,9 @@ func (a *GenkitSecurityAnalyzer) applyAIResult(
 		if err := a.graph.UpdateBigPictureWithImpact(aiResult.BigPictureImpact); err != nil {
 			log.Printf("⚠️ Failed to update BigPicture: %v", err)
 		} else {
-			log.Printf("🖼️ Updated BigPicture: %s = %s", aiResult.BigPictureImpact.Field, aiResult.BigPictureImpact.Value)
+			log.Printf(
+				"🖼️ Updated BigPicture: %s = %s", aiResult.BigPictureImpact.Field, aiResult.BigPictureImpact.Value,
+			)
 		}
 	}
 
@@ -200,7 +217,8 @@ func (a *GenkitSecurityAnalyzer) applyAIResult(
 
 // shouldSkipRequest checks if a request should be skipped using heuristic filtering
 // Accepts individual parameters to avoid creating HTTPExchange object for filtered requests
-func (a *GenkitSecurityAnalyzer) shouldSkipRequest(method, url string, statusCode int, respHeaders map[string]string, respBody string) string {
+func (a *GenkitSecurityAnalyzer) shouldSkipRequest(method, url string, statusCode int, respHeaders map[string]string,
+	respBody string) string {
 	// Skip static assets
 	if isStaticAsset(url) {
 		return "static asset"
