@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,6 +36,7 @@ func NewGenkitSecurityAnalyzer(
 ) *GenkitSecurityAnalyzer {
 	// Create atomic flows
 	unifiedFlow := llm.DefineUnifiedAnalysisFlow(genkitApp, modelName)
+	reflectionFlow := llm.DefineReflectionFlow(genkitApp, modelName)
 	leadFlow := llm.DefineLeadGenerationFlow(genkitApp, modelName)
 
 	// Create orchestration flow with function wrappers
@@ -42,6 +44,9 @@ func NewGenkitSecurityAnalyzer(
 		genkitApp,
 		func(ctx context.Context, req *llm.UnifiedAnalysisRequest) (*llm.UnifiedAnalysisResponse, error) {
 			return unifiedFlow.Run(ctx, req)
+		},
+		func(ctx context.Context, req *llm.ReflectionRequest) (*llm.ReflectionResponse, error) {
+			return reflectionFlow.Run(ctx, req)
 		},
 		func(ctx context.Context, req *llm.LeadGenerationRequest) (*llm.LeadGenerationResponse, error) {
 			return leadFlow.Run(ctx, req)
@@ -95,12 +100,16 @@ func (a *GenkitSecurityAnalyzer) AnalyzeHTTPTraffic(
 	log.Printf("🔍 Analyzing %s %s", method, url)
 	log.Printf("💾 Stored exchange %s", exchangeID)
 
+	// STEP 2.5: Prepare exchange for LLM (truncate large bodies to save tokens)
+	exchangeForLLM := a.prepareExchangeForLLM(exchange)
+
 	// STEP 3: SINGLE AI orchestration flow (unified + lead)
 	// This replaces the old 5-phase pipeline
 	aiResult, err := a.detectiveAIFlow.Run(ctx, &llm.DetectiveAIRequest{
-		Exchange:           exchange,
+		Exchange:           exchangeForLLM,
 		BigPicture:         a.graph.GetBigPicture(),
 		RecentObservations: a.getAllObservations(),
+		RecentLeads:        a.graph.GetRecentLeads(20),
 	})
 	if err != nil {
 		return fmt.Errorf("detective AI failed: %w", err)
@@ -108,7 +117,7 @@ func (a *GenkitSecurityAnalyzer) AnalyzeHTTPTraffic(
 
 	// STEP 4: Apply results to storage (OUTSIDE Genkit flow)
 	// Storage operations are separate from LLM operations
-	observationIDs := a.applyAIResult(exchangeID, exchange, aiResult)
+	a.applyAIResult(exchangeID, exchange, aiResult)
 
 	// STEP 5: SINGLE WebSocket message
 	// Replaces multiple broadcasts from old flow
@@ -121,7 +130,7 @@ func (a *GenkitSecurityAnalyzer) AnalyzeHTTPTraffic(
 		Observations: aiResult.Observations,
 		Connections:  aiResult.Connections,
 		BigPicture:   a.graph.GetBigPicture(),
-		Leads:        a.leadsFromResponse(observationIDs, aiResult.Leads),
+		Leads:        aiResult.Leads,
 	})
 
 	log.Printf("✅ Analysis complete for %s %s", method, url)
@@ -133,41 +142,16 @@ func (a *GenkitSecurityAnalyzer) applyAIResult(
 	exchangeID string,
 	exchange models.HTTPExchange,
 	aiResult *llm.DetectiveAIResult,
-) []string {
-	var observationIDs []string
-
+) {
 	// Store all observations
 	for i := range aiResult.Observations {
 		aiResult.Observations[i].ExchangeID = exchangeID
 		obsID := a.graph.AddObservation(&aiResult.Observations[i])
-		observationIDs = append(observationIDs, obsID)
 
 		log.Printf("💡 Added observation %s", obsID)
 		log.Printf("   - What: %s", aiResult.Observations[i].What)
 		log.Printf("   - Where: %s", aiResult.Observations[i].Where)
 		log.Printf("   - Why: %s", aiResult.Observations[i].Why)
-	}
-
-	// Store connections (link current observations to previous ones)
-	// LLM provides id2 (target observation from Previous Observations list)
-	// Go code provides id1 (current observation being created)
-	for _, conn := range aiResult.Connections {
-		// Skip if no target specified by LLM
-		if conn.ID2 == "" {
-			log.Printf("⚠️ Skipping connection: no id2 specified")
-			continue
-		}
-
-		// Use first observation ID as source (current observation)
-		if len(observationIDs) == 0 {
-			log.Printf("⚠️ Skipping connection: no current observations to link from")
-			continue
-		}
-
-		id1 := observationIDs[0]
-		a.graph.AddConnection(id1, conn.ID2, conn.Reason)
-		log.Printf("🔗 Connection: %s -> %s", id1, conn.ID2)
-		log.Printf("   Reason: %s", conn.Reason)
 	}
 
 	// Update BigPicture
@@ -191,32 +175,27 @@ func (a *GenkitSecurityAnalyzer) applyAIResult(
 		aiResult.SiteMapComment,
 	)
 
-	// Store all leads (0, 1, or multiple per observation)
-	// Each LeadGenerationResponse contains an array of leads for one observation
-	for obsIdx, leadResp := range aiResult.Leads {
-		if obsIdx >= len(observationIDs) || leadResp == nil {
-			continue
+	// Store all leads from AI result
+	// New architecture: Leads are standalone entities without ObservationID
+	// Connections (from AI result) link leads to observations
+	// Step 1: Store all leads (without ObservationID)
+	for _, leadData := range aiResult.Leads {
+		lead := models.Lead{
+			Title:          leadData.Title,
+			ActionableStep: leadData.ActionableStep,
+			PoCs:           leadData.PoCs,
+			CreatedAt:      time.Now(),
 		}
-
-		obsID := observationIDs[obsIdx]
-		for leadIdx, leadData := range leadResp.Leads {
-			lead := models.Lead{
-				ObservationID:  obsID,
-				Title:          leadData.Title,
-				ActionableStep: leadData.ActionableStep,
-				PoCs:           leadData.PoCs,
-				CreatedAt:      time.Now(),
-			}
-			leadID := a.graph.AddLead(&lead)
-			log.Printf("🎯 Added lead %s for observation %s (lead %d of this observation)",
-				leadID, obsID, leadIdx+1)
-			log.Printf("   - Title: %s", lead.Title)
-			log.Printf("   - Step: %s", lead.ActionableStep)
-			log.Printf("   - PoCs: %d", len(lead.PoCs))
-		}
+		leadID := a.graph.AddLead(&lead)
+		log.Printf("🎯 Added lead %s: %s", leadID, lead.Title)
 	}
 
-	return observationIDs
+	// Step 2: Store all connections (including lead↔obs)
+	// Note: AI result now includes connections with actual entity IDs
+	for _, conn := range aiResult.Connections {
+		a.graph.AddConnection(conn.ID1, conn.ID2, conn.Reason)
+		log.Printf("🔗 Connection: %s <-> %s", conn.ID1, conn.ID2)
+	}
 }
 
 // shouldSkipRequest checks if a request should be skipped using heuristic filtering
@@ -288,45 +267,6 @@ func isSkippableContentType(contentType string) bool {
 	return false
 }
 
-// leadsFromResponse creates Lead entities from response array
-// Now handles multiple leads per observation
-func (a *GenkitSecurityAnalyzer) leadsFromResponse(
-	observationIDs []string,
-	resps []*llm.LeadGenerationResponse,
-) []models.Lead {
-	if len(resps) == 0 || len(observationIDs) == 0 {
-		return nil
-	}
-
-	// Pre-allocate with approximate capacity
-	totalLeads := 0
-	for _, resp := range resps {
-		if resp != nil {
-			totalLeads += len(resp.Leads)
-		}
-	}
-
-	leads := make([]models.Lead, 0, totalLeads)
-	for obsIdx, resp := range resps {
-		if resp == nil || obsIdx >= len(observationIDs) {
-			continue
-		}
-
-		obsID := observationIDs[obsIdx]
-		for _, leadData := range resp.Leads {
-			leads = append(leads, models.Lead{
-				ObservationID:  obsID,
-				Title:          leadData.Title,
-				ActionableStep: leadData.ActionableStep,
-				PoCs:           leadData.PoCs,
-				CreatedAt:      time.Now(),
-			})
-		}
-	}
-
-	return leads
-}
-
 // getAllObservations gets recent observations with a configurable limit
 // CRITICAL FIX: Limit prevents token explosion after many requests
 // Default limit of 100 prevents ~150K token prompts after 1000+ requests
@@ -391,4 +331,34 @@ func (a *GenkitSecurityAnalyzer) GetGraph() *models.InMemoryGraph {
 // GetWsHub returns the WebSocket manager (for API server)
 func (a *GenkitSecurityAnalyzer) GetWsHub() *websocket.WebsocketManager {
 	return a.wsHub
+}
+
+const (
+	maxBodySizeForLLM = 10_000 // 10KB limit for LLM analysis
+)
+
+// prepareExchangeForLLM creates a copy of exchange with truncated bodies for LLM analysis
+// This prevents sending large binary data (images, videos, etc.) to the LLM
+func (a *GenkitSecurityAnalyzer) prepareExchangeForLLM(exchange models.HTTPExchange) models.HTTPExchange {
+	result := exchange
+
+	// Truncate request body if needed
+	if len(exchange.Request.Body) > maxBodySizeForLLM {
+		result.Request.Body = truncateBody(exchange.Request.Body)
+		log.Printf("⚠️ Truncated request body for LLM: %d → %d bytes", len(exchange.Request.Body), maxBodySizeForLLM)
+	}
+
+	// Truncate response body if needed
+	if len(exchange.Response.Body) > maxBodySizeForLLM {
+		result.Response.Body = truncateBody(exchange.Response.Body)
+		log.Printf("⚠️ Truncated response body for LLM: %d → %d bytes", len(exchange.Response.Body), maxBodySizeForLLM)
+	}
+
+	return result
+}
+
+// truncateBody truncates body to maxBodySizeForLLM and adds a marker
+func truncateBody(body string) string {
+	omitted := len(body) - maxBodySizeForLLM
+	return body[:maxBodySizeForLLM] + "\n\n... [TRUNCATED: " + strconv.Itoa(omitted) + " bytes omitted]"
 }

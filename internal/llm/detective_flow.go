@@ -19,6 +19,7 @@ type DetectiveAIRequest struct {
 	Exchange           models.HTTPExchange  `json:"exchange"`
 	BigPicture         *models.BigPicture   `json:"big_picture,omitempty"`
 	RecentObservations []models.Observation `json:"recent_observations,omitempty"`
+	RecentLeads        []models.Lead        `json:"recent_leads,omitempty"` // NEW: for deduplication
 }
 
 // DetectiveAIResult represents the complete output from detective AI analysis
@@ -30,16 +31,18 @@ type DetectiveAIResult struct {
 	BigPictureImpact *models.BigPictureImpact `json:"big_picture_impact,omitempty"`
 	SiteMapComment   string                   `json:"site_map_comment,omitempty"`
 
-	// Lead generation results (optional, one lead per observation)
-	Leads []*LeadGenerationResponse `json:"leads,omitempty"`
+	// Lead generation results (optional, direct leads)
+	Leads []models.Lead `json:"leads,omitempty"` // Changed from []*LeadGenerationResponse
 }
 
 // DefineDetectiveAIFlow creates the orchestration flow that coordinates:
 // 1. Unified Analysis (atomic flow)
-// 2. Lead Generation (optional, conditional on observation)
+// 2. Reflection (filters observations, finds connections)
+// 3. Lead Generation (optional, conditional on observation)
 func DefineDetectiveAIFlow(
 	g *genkit.Genkit,
 	unifiedFlow func(context.Context, *UnifiedAnalysisRequest) (*UnifiedAnalysisResponse, error),
+	reflectionFlow func(context.Context, *ReflectionRequest) (*ReflectionResponse, error),
 	leadFlow func(context.Context, *LeadGenerationRequest) (*LeadGenerationResponse, error),
 ) *genkitcore.Flow[*DetectiveAIRequest, *DetectiveAIResult, struct{}] {
 	return genkit.DefineFlow(
@@ -72,35 +75,93 @@ func DefineDetectiveAIFlow(
 				unifiedResp.Comment, len(unifiedResp.Observations))
 
 			// ═══════════════════════════════════════════════════════════════════════════════
-			// Step 2: Lead Generation (optional, conditional - for each observation)
-			// NOTE: Each observation can generate 0, 1, or multiple leads
+			// Step 2: Reflection (filters observations, finds connections)
 			// ═══════════════════════════════════════════════════════════════════════════════
 
-			var allLeads []*LeadGenerationResponse
+			var finalObservations []models.Observation
+			var allConnections []models.Connection
 
 			if len(unifiedResp.Observations) > 0 {
-				log.Printf("💡 Found %d observation(s), generating leads...", len(unifiedResp.Observations))
+				reflectionReq := &ReflectionRequest{
+					Observations:    unifiedResp.Observations,
+					AllObservations: req.RecentObservations,
+					BigPicture:      req.BigPicture,
+				}
 
-				for i, obs := range unifiedResp.Observations {
+				reflectionResp, err := genkit.Run(
+					ctx, "reflection",
+					func() (*ReflectionResponse, error) {
+						return reflectionFlow(ctx, reflectionReq)
+					},
+				)
+				if err != nil {
+					// Reflection is non-critical, fall back to original observations
+					log.Printf("⚠️ Reflection failed (non-critical): %v", err)
+					finalObservations = unifiedResp.Observations
+					allConnections = unifiedResp.Connections
+				} else {
+					// Use reflected observations with IsSignificant and Hint populated
+					finalObservations = reflectionResp.Observations
+					// Merge connections from both phases
+					allConnections = append(unifiedResp.Connections, reflectionResp.Connections...)
+					log.Printf("✅ Reflection complete: observations_count=%d, connections_count=%d",
+						len(finalObservations), len(reflectionResp.Connections))
+				}
+			} else {
+				finalObservations = unifiedResp.Observations
+				allConnections = unifiedResp.Connections
+			}
+
+			// ═══════════════════════════════════════════════════════════════════════════════
+			// Step 3: Lead Generation (optional, conditional - batch mode)
+			// NOTE: Processes all significant observations in a single batch call
+			// to enable cross-observation lead generation and reduce LLM calls
+			// ═══════════════════════════════════════════════════════════════════════════════
+
+			var allLeads []models.Lead
+
+			if len(finalObservations) > 0 {
+				// Filter significant observations first
+				var significantObs []models.Observation
+				for _, obs := range finalObservations {
+					if obs.IsSignificant != nil && *obs.IsSignificant {
+						significantObs = append(significantObs, obs)
+					}
+				}
+
+				if len(significantObs) > 0 {
+					log.Printf("💡 Found %d significant observation(s) out of %d total, generating batch leads...",
+						len(significantObs), len(finalObservations))
+
 					leadReq := &LeadGenerationRequest{
-						Observation: obs,
-						BigPicture:  req.BigPicture,
+						Observations:  significantObs,  // Batch mode: all significant observations
+						ExistingLeads: req.RecentLeads, // NEW: for deduplication
+						BigPicture:    req.BigPicture,
 					}
 
 					leadResult, err := genkit.Run(
-						ctx, fmt.Sprintf("leadGeneration_%d", i),
+						ctx, "leadGeneration_batch", // Single batch call
 						func() (*LeadGenerationResponse, error) {
 							return leadFlow(ctx, leadReq)
 						},
 					)
 					if err != nil {
 						// Lead generation is optional, don't fail entire flow
-						log.Printf("⚠️ Lead generation failed for observation %d (non-critical): %v", i, err)
+						log.Printf("⚠️ Batch lead generation failed (non-critical): %v", err)
 					} else {
-						allLeads = append(allLeads, leadResult)
-						log.Printf("✅ Lead generation complete for observation %d: leads_count=%d",
-							i, len(leadResult.Leads))
+						// Convert LeadData to models.Lead
+						for _, leadData := range leadResult.Leads {
+							lead := models.Lead{
+								Title:          leadData.Title,
+								ActionableStep: leadData.ActionableStep,
+								PoCs:           leadData.PoCs,
+							}
+							allLeads = append(allLeads, lead)
+						}
+						log.Printf("✅ Batch lead generation complete: leads_count=%d", len(leadResult.Leads))
 					}
+				} else {
+					log.Printf("ℹ️ No significant observations found, skipping lead generation")
 				}
 			} else {
 				log.Printf("ℹ️ No observations found, skipping lead generation")
@@ -112,8 +173,8 @@ func DefineDetectiveAIFlow(
 
 			result := &DetectiveAIResult{
 				Comment:          unifiedResp.Comment,
-				Observations:     unifiedResp.Observations,
-				Connections:      unifiedResp.Connections,
+				Observations:     finalObservations,
+				Connections:      allConnections,
 				BigPictureImpact: unifiedResp.BigPictureImpact,
 				SiteMapComment:   unifiedResp.SiteMapComment,
 				Leads:            allLeads,

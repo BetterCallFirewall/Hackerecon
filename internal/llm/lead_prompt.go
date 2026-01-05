@@ -11,42 +11,90 @@ import (
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // LeadGenerationRequest represents input for lead generation
+// Supports both single observation (backward compatibility) and batch mode
+// Now includes existing leads for deduplication (many-to-many relationship)
 type LeadGenerationRequest struct {
-	Observation models.Observation `json:"observation" jsonschema:"description=Observation to generate lead from"`
-	BigPicture  *models.BigPicture `json:"big_picture,omitempty" jsonschema:"description=Current understanding of target application,nullable"`
+	Observation   models.Observation   `json:"observation,omitempty" jsonschema:"description=Single observation (deprecated, use observations)"`
+	Observations  []models.Observation `json:"observations" jsonschema:"description=Observations to generate leads from (batch mode)"`
+	ExistingLeads []models.Lead        `json:"existing_leads,omitempty" jsonschema:"description=Existing leads for deduplication (LLM should reuse these instead of creating duplicates)"`
+	BigPicture    *models.BigPicture   `json:"big_picture,omitempty" jsonschema:"description=Current understanding of target application,nullable"`
 }
 
 // LeadData represents a single lead with all its details
+// NOTE: No observation_index - leads are standalone entities, linked via Connection
 type LeadData struct {
 	IsActionable   bool              `json:"is_actionable" jsonschema:"description=Whether this lead is actionable"`
-	Title          string            `json:"title" jsonschema:"description=Short title (max 10 words)"`
-	ActionableStep string            `json:"actionable_step" jsonschema:"description=Concrete testing step"`
-	PoCs           []models.PoCEntry `json:"pocs" jsonschema:"description=Human-readable PoC instructions"`
+	Title          string            `json:"title" jsonschema:"description=Short title (max 10 words),required"`
+	ActionableStep string            `json:"actionable_step" jsonschema:"description=Concrete testing step,required"`
+	PoCs           []models.PoCEntry `json:"pocs" jsonschema:"description=Human-readable PoC instructions,required"`
 }
 
 // LeadGenerationResponse represents output from lead generation
-// Returns 0, 1, or MULTIPLE leads from a single observation
+// Returns leads and their connections to observations
 // NOTE: Does NOT include CanAutoVerify field (per user requirements)
 type LeadGenerationResponse struct {
-	Leads []LeadData `json:"leads" jsonschema:"description=Array of leads generated from this observation (0, 1, or many)"`
+	Leads       []LeadData          `json:"leads" jsonschema:"description=Array of leads (0, 1, or many)"`
+	Connections []models.Connection `json:"connections" jsonschema:"description=Connections between leads and observations (id1=obs-*, id2=lead-*)"`
 }
 
 // BuildLeadGenerationPrompt creates prompt for generating leads from observations
 // Uses simple string concatenation (not strings.Builder)
 // Emphasis on human-readable PoC instructions
+// NEW: Includes existing leads for deduplication, uses connections instead of observation_index
 func BuildLeadGenerationPrompt(req *LeadGenerationRequest) string {
 	prompt := "You are generating actionable leads from security observations.\n\n"
 
 	// Input section
-	prompt += "## Input\n\n"
-	prompt += "**Observation:**\n"
-	prompt += fmt.Sprintf("- What: %s\n", req.Observation.What)
-	prompt += fmt.Sprintf("- Where: %s\n", req.Observation.Where)
-	prompt += fmt.Sprintf("- Why: %s\n", req.Observation.Why)
+	prompt += "## Context\n\n"
+
+	// Support both batch mode and single observation (backward compatibility)
+	if len(req.Observations) > 0 {
+		// Batch mode - multiple observations
+		prompt += fmt.Sprintf("**New Observations (%d):**\n", len(req.Observations))
+		for i, obs := range req.Observations {
+			prompt += fmt.Sprintf("\n**Observation %d (ID: %s):**\n", i+1, obs.ID)
+			prompt += fmt.Sprintf("- What: %s\n", obs.What)
+			prompt += fmt.Sprintf("- Where: %s\n", obs.Where)
+			prompt += fmt.Sprintf("- Why: %s\n", obs.Why)
+			// CRITICAL: Include Hint field if present
+			if obs.Hint != "" {
+				prompt += fmt.Sprintf("- **HINT**: %s\n", obs.Hint)
+			}
+		}
+	} else {
+		// Single observation mode (backward compatibility)
+		prompt += fmt.Sprintf("**New Observation (ID: %s):**\n", req.Observation.ID)
+		prompt += fmt.Sprintf("- What: %s\n", req.Observation.What)
+		prompt += fmt.Sprintf("- Where: %s\n", req.Observation.Where)
+		prompt += fmt.Sprintf("- Why: %s\n", req.Observation.Why)
+
+		// CRITICAL: Include Hint field if present
+		if req.Observation.Hint != "" {
+			prompt += fmt.Sprintf("- **HINT**: %s\n", req.Observation.Hint)
+		}
+	}
+
+	// Existing leads section (NEW - for deduplication)
+	if len(req.ExistingLeads) > 0 {
+		prompt += fmt.Sprintf("\n**Existing Leads (%d) - CHECK FOR DUPLICATES:**\n", len(req.ExistingLeads))
+		for i, lead := range req.ExistingLeads {
+			prompt += fmt.Sprintf("\n**Lead %d (ID: %s):**\n", i+1, lead.ID)
+			prompt += fmt.Sprintf("- Title: %s\n", lead.Title)
+			prompt += fmt.Sprintf("- Actionable Step: %s\n", lead.ActionableStep)
+			if len(lead.PoCs) > 0 {
+				prompt += "- PoCs:\n"
+				for j, poc := range lead.PoCs {
+					prompt += fmt.Sprintf("  %d. %s\n", j+1, poc.Payload)
+				}
+			}
+		}
+		prompt += "\nIMPORTANT: Before creating a new lead, check if an existing lead already covers the same testing approach.\n"
+		prompt += "If an existing lead is conceptually equivalent, do NOT create a duplicate - instead create a connection to the existing lead.\n"
+	}
 
 	// BigPicture context (optional)
 	if req.BigPicture != nil {
-		prompt += "\n**Site Context:**\n"
+		prompt += "\n**Site Context (Big Picture):**\n"
 		prompt += fmt.Sprintf("- Description: %s\n", req.BigPicture.Description)
 		prompt += fmt.Sprintf("- Functionalities: %s\n", req.BigPicture.Functionalities)
 		prompt += fmt.Sprintf("- Technologies: %s\n", req.BigPicture.Technologies)
@@ -54,10 +102,19 @@ func BuildLeadGenerationPrompt(req *LeadGenerationRequest) string {
 
 	// Task description
 	prompt += "\n## Task\n\n"
-	prompt += "Generate 0, 1, or MULTIPLE actionable leads from this observation.\n\n"
-	prompt += "A single observation can lead to different testing approaches.\n"
-	prompt += "Return ALL relevant leads in the leads array.\n\n"
-	prompt += "If NO actionable leads - return empty leads array: {\"leads\": []}\n"
+
+	prompt += "Generate 0, 1, or MULTIPLE actionable leads from the new observations.\n\n"
+	prompt += "**Key Requirements:**\n"
+	prompt += "1. **Check for duplicates** - Review existing leads and reuse them when conceptually equivalent\n"
+	prompt += "2. **Many-to-many relationships** - One lead can relate to MULTIPLE observations\n"
+	prompt += "3. **Create connections** - Link leads to observations using Connection entities (obs-*, lead-*)\n\n"
+
+	prompt += "**Decision Process:**\n"
+	prompt += "- For each new observation, check existing leads\n"
+	prompt += "- If existing lead covers this observation → Create Connection(obs-*, existing-lead-*)\n"
+	prompt += "- If no existing lead applies → Create new Lead + Connections\n\n"
+
+	prompt += "If NO actionable leads - return empty arrays: {\"leads\": [], \"connections\": []}\n"
 
 	// Output format
 	prompt += "\n## Output Format (JSON):\n\n"
@@ -73,75 +130,112 @@ func BuildLeadGenerationPrompt(req *LeadGenerationRequest) string {
           "comment": "Explanation of what this PoC tests"
         }
       ]
+    }
+  ],
+  "connections": [
+    {
+      "id1": "obs-19",
+      "id2": "lead-45",
+      "reason": "This observation suggests file enumeration"
     },
     {
-      "is_actionable": true,
-      "title": "Another testing approach",
-      "actionable_step": "Different specific step",
-      "pocs": [...]
+      "id1": "obs-20",
+      "id2": "lead-45",
+      "reason": "This observation also suggests file enumeration"
     }
   ]
 }
+`
 
-If NO actionable leads:
-{
-  "leads": []
-}`
+	prompt += `
+**IMPORTANT NOTES:**
+- "id1" and "id2" in connections use the actual observation/lead IDs (e.g., "obs-19", "lead-45")
+- One lead can connect to MULTIPLE observations (see example above: lead-45 connects to both obs-19 and obs-20)
+- When reusing existing leads, use their actual ID (e.g., "lead-42") in the connection
+- Connection order doesn't matter (id1/id2 are interchangeable)
+`
 
-	// Rules section - emphasis on human-readable PoCs
+	// Rules section - emphasis on human-readable PoCs and deduplication
 	prompt += "\n\n## Rules\n\n"
-	prompt += "1. **0, 1, or multiple leads** - return all relevant leads in the leads array\n"
-	prompt += "2. **Each lead must be actionable** - specific step, not generic advice\n"
-	prompt += "3. **Human-readable PoCs** - provide clear instructions, NOT raw JSON payloads\n"
-	prompt += "4. **Multiple PoC formats** - use curl commands, step-by-step instructions, or descriptions\n"
-	prompt += "5. **Each PoC must have a comment** - explain what it tests\n"
-	prompt += "6. **Be concrete** - exact changes to make or commands to run\n"
+	prompt += "1. **Check existing leads FIRST** - Before creating new leads, review existing leads for duplicates\n"
+	prompt += "2. **No duplicate leads** - If an existing lead is conceptually equivalent (same testing approach), reuse it via connection\n"
+	prompt += "3. **Many-to-many is OK** - One lead can relate to multiple observations, one observation can have multiple leads\n"
+	prompt += "4. **Connection IDs** - Use actual entity IDs (obs-*, lead-*) in connections\n"
+	prompt += "5. **Each PoC must have both payload AND comment** - both fields are required, never omit comment\n"
+	prompt += "6. **Each lead must be actionable** - specific step, not generic advice\n"
+	prompt += "7. **Human-readable PoCs** - provide clear instructions, NOT raw JSON payloads\n"
+	prompt += "8. **Multiple PoC formats** - use curl commands, step-by-step instructions, or descriptions\n"
+	prompt += "9. **Be concrete** - exact changes to make or commands to run\n"
+	prompt += "10. **CRITICAL: Use the Hint field** - If observation.Hint is provided and contains specific guidance (e.g., \"try MongoDB operators\", \"test XSS with\", \"attempt SQL injection\"), you MUST generate at least one lead that follows this hint exactly. The hint contains expert security guidance that should take priority over generic approaches.\n"
 
-	// Examples section - emphasis on human-readable format
+	// Examples section - show new connection-based format
 	prompt += "\n## Examples\n\n"
 
-	prompt += "Single lead:\n"
+	prompt += "**Example 1: New lead connecting to multiple observations**\n"
+	prompt += "Input: 2 observations about file enumeration, no existing leads\n\n"
+	prompt += "Output:\n"
 	prompt += "{\n"
 	prompt += `  "leads": [` + "\n"
 	prompt += `    {` + "\n"
 	prompt += `      "is_actionable": true,` + "\n"
-	prompt += `      "title": "Try MD5 substitution",` + "\n"
-	prompt += `      "actionable_step": "Replace MD5 hash with another value and check response",` + "\n"
+	prompt += `      "title": "Enumerate stored wallpapers",` + "\n"
+	prompt += `      "actionable_step": "Brute-force the 8-character hex prefix to discover other uploaded files",` + "\n"
+	prompt += `      "pocs": [` + "\n"
+	prompt += `        {"payload": "curl http://example.com/files/00000000.jpg", "comment": "Test prefix 00000000"},` + "\n"
+	prompt += `        {"payload": "curl http://example.com/files/00000001.jpg", "comment": "Test prefix 00000001"}` + "\n"
+	prompt += `      ]` + "\n"
+	prompt += `    }` + "\n"
+	prompt += `  ],` + "\n"
+	prompt += `  "connections": [` + "\n"
+	prompt += `    {"id1": "obs-19", "id2": "lead-56", "reason": "This observation suggests file enumeration"},` + "\n"
+	prompt += `    {"id1": "obs-20", "id2": "lead-56", "reason": "This observation also suggests file enumeration"}` + "\n"
+	prompt += `  ]` + "\n"
+	prompt += "}\n\n"
+
+	prompt += "**Example 2: Reusing existing lead**\n"
+	prompt += "Input: 1 new observation about file enumeration\n"
+	prompt += "Existing leads: lead-56 (Enumerate stored wallpapers)\n\n"
+	prompt += "Output:\n"
+	prompt += "{\n"
+	prompt += `  "leads": [],` + "\n"
+	prompt += `  "connections": [` + "\n"
+	prompt += `    {"id1": "obs-21", "id2": "lead-56", "reason": "New observation also suggests file enumeration, reuse existing lead"}` + "\n"
+	prompt += `  ]` + "\n"
+	prompt += "}\n\n"
+
+	prompt += "**Example 3: No actionable leads**\n"
+	prompt += "Input: Observation about static CSS file\n\n"
+	prompt += "Output:\n"
+	prompt += "{\n"
+	prompt += `  "leads": [],` + "\n"
+	prompt += `  "connections": []` + "\n"
+	prompt += "}\n\n"
+
+	// Example showing Hint usage
+	prompt += "**Example 4: Using Hint field**\n"
+	prompt += "Observation includes Hint: \"If any endpoint accepts this _id directly, try MongoDB operators like {$ne:null} or {$gt:''} in place of the ID to trigger NoSQL injection\"\n\n"
+	prompt += "Expected lead (MUST follow the hint):\n"
+	prompt += "{\n"
+	prompt += `  "leads": [` + "\n"
+	prompt += `    {` + "\n"
+	prompt += `      "is_actionable": true,` + "\n"
+	prompt += `      "title": "Test NoSQL injection with MongoDB operators",` + "\n"
+	prompt += `      "actionable_step": "Replace ObjectId with MongoDB operators in the URL parameter",` + "\n"
 	prompt += `      "pocs": [` + "\n"
 	prompt += `        {` + "\n"
-	prompt += `          "payload": "curl -X GET 'http://target/api/ticket/098f6bcd4621d373cade4e832627b4f6' -H 'Cookie: session=...'",` + "\n"
-	prompt += `          "comment": "Try another MD5 hash to test if you can access different tickets"` + "\n"
+	prompt += `          "payload": "curl -X GET 'http://example.com/api/tickets/{$ne:null}' -H 'Cookie: session=...'",` + "\n"
+	prompt += `          "comment": "Test NoSQL injection by using MongoDB $ne operator to bypass ObjectId validation"` + "\n"
+	prompt += `        },` + "\n"
+	prompt += `        {` + "\n"
+	prompt += `          "payload": "curl -X GET 'http://example.com/api/tickets/{$gt:'}' -H 'Cookie: session=...'",` + "\n"
+	prompt += `          "comment": "Test NoSQL injection by using MongoDB $gt operator with empty string"` + "\n"
 	prompt += `        }` + "\n"
 	prompt += `      ]` + "\n"
 	prompt += `    }` + "\n"
+	prompt += `  ],` + "\n"
+	prompt += `  "connections": [` + "\n"
+	prompt += `    {"id1": "obs-15", "id2": "lead-57", "reason": "Hint indicates NoSQL injection testing"}` + "\n"
 	prompt += `  ]` + "\n"
-	prompt += "}\n\n"
-
-	prompt += "Multiple leads (when different approaches exist):\n"
-	prompt += "{\n"
-	prompt += `  "leads": [` + "\n"
-	prompt += `    {` + "\n"
-	prompt += `      "is_actionable": true,` + "\n"
-	prompt += `      "title": "Try MD5 hash substitution",` + "\n"
-	prompt += `      "actionable_step": "Replace MD5 hash in URL with different values",` + "\n"
-	prompt += `      "pocs": [` + "\n"
-	prompt += `        {"payload": "curl ...", "comment": "Try different MD5"}` + "\n"
-	prompt += `      ]` + "\n"
-	prompt += `    },` + "\n"
-	prompt += `    {` + "\n"
-	prompt += `      "is_actionable": true,` + "\n"
-	prompt += `      "title": "Try removing the hash parameter",` + "\n"
-	prompt += `      "actionable_step": "Remove hash to see if server returns default ticket",` + "\n"
-	prompt += `      "pocs": [` + "\n"
-	prompt += `        {"payload": "curl ... without hash", "comment": "Test parameter removal"}` + "\n"
-	prompt += `      ]` + "\n"
-	prompt += `    }` + "\n"
-	prompt += `  ]` + "\n"
-	prompt += "}\n\n"
-
-	prompt += "No actionable leads:\n"
-	prompt += "{\n"
-	prompt += `  "leads": []` + "\n"
 	prompt += "}\n\n"
 
 	prompt += "IMPORTANT: Focus on HUMAN-READABLE instructions that a security researcher can understand and execute."

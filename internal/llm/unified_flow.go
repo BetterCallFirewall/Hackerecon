@@ -40,14 +40,12 @@ func enrichConnection(conn *models.Connection, id1, id2 string) {
 	}
 }
 
-// enrichLead populates technical fields (id, observation_id, created_at)
+// enrichLead populates technical fields (id, created_at)
 // Business fields (title, actionable_step, pocs) are already filled by LLM
-func enrichLead(lead *models.Lead, observationID string) {
+// Updated: No longer populates ObservationID (many-to-many relationship via connections)
+func enrichLead(lead *models.Lead, _ string) {
 	if lead.ID == "" {
 		lead.ID = fmt.Sprintf("lead-%d", time.Now().UnixNano())
-	}
-	if lead.ObservationID == "" {
-		lead.ObservationID = observationID
 	}
 	if lead.CreatedAt.IsZero() {
 		lead.CreatedAt = time.Now()

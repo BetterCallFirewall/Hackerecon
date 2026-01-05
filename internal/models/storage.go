@@ -145,21 +145,34 @@ func (g *InMemoryGraph) GetRecentObservations(n int) []*Observation {
 }
 
 // GetObservationsForLead returns all observations associated with a lead
+// Updated for many-to-many relationship: uses connections instead of ObservationID
 func (g *InMemoryGraph) GetObservationsForLead(leadID string) []*Observation {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 
-	lead, ok := g.leads[leadID]
-	if !ok {
+	// Find all connections that involve this lead
+	var observationIDs []string
+	for _, conn := range g.connections {
+		if conn.ID1 == leadID {
+			observationIDs = append(observationIDs, conn.ID2)
+		} else if conn.ID2 == leadID {
+			observationIDs = append(observationIDs, conn.ID1)
+		}
+	}
+
+	if len(observationIDs) == 0 {
 		return []*Observation{}
 	}
 
-	observation, ok := g.observations[lead.ObservationID]
-	if !ok {
-		return []*Observation{}
+	// Collect all connected observations
+	observations := make([]*Observation, 0, len(observationIDs))
+	for _, obsID := range observationIDs {
+		if obs, ok := g.observations[obsID]; ok {
+			observations = append(observations, obs)
+		}
 	}
 
-	return []*Observation{observation}
+	return observations
 }
 
 // AddLead adds a lead and returns its ID
@@ -335,6 +348,33 @@ func (g *InMemoryGraph) GetAllLeads() []*Lead {
 	for _, lead := range g.leads {
 		leads = append(leads, lead)
 	}
+	return leads
+}
+
+// GetRecentLeads returns the N most recent leads (newest first)
+// Added for lead deduplication in detective flow (many-to-many relationship)
+func (g *InMemoryGraph) GetRecentLeads(limit int) []Lead {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
+	if len(g.leads) == 0 {
+		return []Lead{}
+	}
+
+	leads := make([]Lead, 0, len(g.leads))
+	for _, lead := range g.leads {
+		leads = append(leads, *lead)
+	}
+
+	// Sort by CreatedAt (newest first)
+	sort.Slice(leads, func(i, j int) bool {
+		return leads[i].CreatedAt.After(leads[j].CreatedAt)
+	})
+
+	if len(leads) > limit {
+		leads = leads[:limit]
+	}
+
 	return leads
 }
 
