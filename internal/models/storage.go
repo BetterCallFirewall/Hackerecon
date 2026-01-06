@@ -59,20 +59,23 @@ type InMemoryGraph struct {
 	connectionCount  int
 
 	// IMPORTANT FIX #1: Configurable limit to prevent unbounded memory growth
-	maxObservations int
+	maxObservations   int
+	maxSiteMapEntries int
 }
 
 // NewInMemoryGraph creates a new in-memory graph
 // IMPORTANT FIX #1: Initialize with configurable max observations limit (default: 1000)
+// IMPORTANT FIX #2: Initialize with configurable max site map entries limit (default: 500)
 func NewInMemoryGraph() *InMemoryGraph {
 	return &InMemoryGraph{
-		exchanges:       make(map[string]*HTTPExchange),
-		observations:    make(map[string]*Observation),
-		leads:           make(map[string]*Lead),
-		connections:     make([]*Connection, 0),
-		siteMap:         make(map[string]*SiteMapEntry),
-		bigPicture:      &BigPicture{},
-		maxObservations: 1000, // Configurable limit to prevent unbounded memory growth
+		exchanges:         make(map[string]*HTTPExchange),
+		observations:      make(map[string]*Observation),
+		leads:             make(map[string]*Lead),
+		connections:       make([]*Connection, 0),
+		siteMap:           make(map[string]*SiteMapEntry),
+		bigPicture:        &BigPicture{},
+		maxObservations:   1000, // Configurable limit to prevent unbounded memory growth
+		maxSiteMapEntries: 500,  // Configurable limit to prevent unbounded site map growth
 	}
 }
 
@@ -317,6 +320,7 @@ func (g *InMemoryGraph) GetBigPicture() *BigPicture {
 }
 
 // AddOrUpdateSiteMapEntry adds or updates a site map entry
+// IMPORTANT FIX #2: Prune oldest entry if limit exceeded (FIFO)
 func (g *InMemoryGraph) AddOrUpdateSiteMapEntry(entry *SiteMapEntry) string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -326,7 +330,25 @@ func (g *InMemoryGraph) AddOrUpdateSiteMapEntry(entry *SiteMapEntry) string {
 		entry.ID = fmt.Sprintf("smap-%s-%s", entry.Method, fmt.Sprintf("%x", entry.URL))
 	}
 
+	// Set CreatedAt if this is a new entry (not an update)
+	if existing, found := g.siteMap[entry.ID]; !found {
+		// New entry - set CreatedAt
+		if entry.CreatedAt.IsZero() {
+			entry.CreatedAt = time.Now()
+		}
+	} else {
+		// Update - preserve original CreatedAt
+		entry.CreatedAt = existing.CreatedAt
+	}
+
 	g.siteMap[entry.ID] = entry
+
+	// IMPORTANT FIX #2: Prune oldest site map entry if limit exceeded (FIFO)
+	// This prevents unbounded memory growth during long-running sessions
+	if len(g.siteMap) > g.maxSiteMapEntries {
+		g.pruneOldestSiteMapEntry()
+	}
+
 	return entry.ID
 }
 
@@ -439,5 +461,32 @@ func (g *InMemoryGraph) pruneOldestObservation() {
 	// Remove oldest observation
 	if oldestID != "" {
 		delete(g.observations, oldestID)
+	}
+}
+
+// pruneOldestSiteMapEntry removes the oldest site map entry from the graph
+// IMPORTANT FIX #2: Helper method for FIFO pruning to prevent unbounded memory growth
+// NOTE: This must be called while holding the write lock (mu.Lock)
+func (g *InMemoryGraph) pruneOldestSiteMapEntry() {
+	if len(g.siteMap) == 0 {
+		return
+	}
+
+	// Find oldest site map entry by CreatedAt
+	var oldestID string
+	var oldestTime time.Time
+	first := true
+
+	for id, entry := range g.siteMap {
+		if first || entry.CreatedAt.Before(oldestTime) {
+			oldestID = id
+			oldestTime = entry.CreatedAt
+			first = false
+		}
+	}
+
+	// Remove oldest site map entry
+	if oldestID != "" {
+		delete(g.siteMap, oldestID)
 	}
 }

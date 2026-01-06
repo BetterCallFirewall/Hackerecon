@@ -13,12 +13,14 @@ import (
 // LeadGenerationRequest represents input for lead generation
 // Supports both single observation (backward compatibility) and batch mode
 // Now includes existing leads for deduplication (many-to-many relationship)
+// Now includes site_map entries for context (all available endpoints with exchange_id)
 type LeadGenerationRequest struct {
-	Observation   models.Observation    `json:"observation,omitempty" jsonschema:"description=Single observation (deprecated, use observations)"`
-	Observations  []models.Observation  `json:"observations" jsonschema:"description=Observations to generate leads from (batch mode)"`
-	ExistingLeads []models.Lead         `json:"existing_leads,omitempty" jsonschema:"description=Existing leads for deduplication (LLM should reuse these instead of creating duplicates)"`
-	BigPicture    *models.BigPicture    `json:"big_picture,omitempty" jsonschema:"description=Current understanding of target application,nullable"`
-	Graph         *models.InMemoryGraph `json:"-"` // InMemoryGraph for getExchange tool (not serialized)
+	Observation    models.Observation    `json:"observation,omitempty" jsonschema:"description=Single observation (deprecated, use observations)"`
+	Observations   []models.Observation  `json:"observations" jsonschema:"description=Observations to generate leads from (batch mode)"`
+	ExistingLeads  []models.Lead         `json:"existing_leads,omitempty" jsonschema:"description=Existing leads for deduplication (LLM should reuse these instead of creating duplicates)"`
+	SiteMapEntries []models.SiteMapEntry `json:"site_map_entries,omitempty" jsonschema:"description=All site map entries with exchange_id for context (helps generate accurate PoCs by knowing available endpoints)"`
+	BigPicture     *models.BigPicture    `json:"big_picture,omitempty" jsonschema:"description=Current understanding of target application,nullable"`
+	Graph          *models.InMemoryGraph `json:"-"` // InMemoryGraph for getExchange tool (not serialized)
 }
 
 // LeadData represents a single lead with all its details
@@ -91,6 +93,23 @@ func BuildLeadGenerationPrompt(req *LeadGenerationRequest) string {
 		}
 		prompt += "\nIMPORTANT: Before creating a new lead, check if an existing lead already covers the same testing approach.\n"
 		prompt += "If an existing lead is conceptually equivalent, do NOT create a duplicate - instead create a connection to the existing lead.\n"
+	}
+
+	// Site map section (NEW - for context about available endpoints)
+	if len(req.SiteMapEntries) > 0 {
+		prompt += fmt.Sprintf("\n**Site Map (%d entries) - ALL AVAILABLE ENDPOINTS:**\n", len(req.SiteMapEntries))
+		prompt += "Each entry shows the endpoint URL, method, exchange_id (for getExchange tool), and comment.\n\n"
+		for i, entry := range req.SiteMapEntries {
+			prompt += fmt.Sprintf("%d. **%s %s** (exchange_id: %s)\n", i+1, entry.Method, entry.URL, entry.ID)
+			if entry.Comment != "" {
+				prompt += "   Comment: " + entry.Comment + "\n"
+			}
+		}
+		prompt += "\n**USE THIS SITE MAP TO:**\n"
+		prompt += "- Understand what endpoints are available on the target\n"
+		prompt += "- Identify related endpoints for testing (e.g., /api/login vs /api/user)\n"
+		prompt += "- Use exchange_id with getExchange() tool to examine exact requests\n"
+		prompt += "- Craft accurate PoCs that target real endpoints\n\n"
 	}
 
 	// Available tools section (NEW - getExchange tool)

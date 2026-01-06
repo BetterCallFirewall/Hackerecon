@@ -96,11 +96,12 @@ type BigPictureImpact struct {
 
 // SiteMapEntry represents an entry in the site map (Burp-style)
 type SiteMapEntry struct {
-	ID       string       `json:"id" jsonschema:"description=Unique site map entry ID"`
-	Method   string       `json:"method" jsonschema:"description=HTTP method"`
-	URL      string       `json:"url" jsonschema:"description=Full URL"`
-	Comment  string       `json:"comment" jsonschema:"description=LLM-generated comment about this entry"`
-	Request  RequestPart  `json:"request" jsonschema:"description=Request portion"`
-	Response ResponsePart `json:"response" jsonschema:"description=Response portion"`
-	Children []string     `json:"children,omitempty" jsonschema:"description=Child IDs for hierarchy"`
+	ID        string       `json:"id" jsonschema:"description=Unique site map entry ID"`
+	Method    string       `json:"method" jsonschema:"description=HTTP method"`
+	URL       string       `json:"url" jsonschema:"description=Full URL"`
+	Comment   string       `json:"comment" jsonschema:"description=LLM-generated comment about this entry"`
+	Request   RequestPart  `json:"request" jsonschema:"description=Request portion"`
+	Response  ResponsePart `json:"response" jsonschema:"description=Response portion"`
+	Children  []string     `json:"children,omitempty" jsonschema:"description=Child IDs for hierarchy"`
+	CreatedAt time.Time    `json:"created_at,omitempty" jsonschema:"description=Auto-populated Unix timestamp when entry was created"`
 }

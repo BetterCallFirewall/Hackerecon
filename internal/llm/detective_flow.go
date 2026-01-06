@@ -19,8 +19,9 @@ type DetectiveAIRequest struct {
 	Exchange           models.HTTPExchange   `json:"exchange"`
 	BigPicture         *models.BigPicture    `json:"big_picture,omitempty"`
 	RecentObservations []models.Observation  `json:"recent_observations,omitempty"`
-	RecentLeads        []models.Lead         `json:"recent_leads,omitempty"` // for deduplication
-	Graph              *models.InMemoryGraph `json:"-"`                      // InMemoryGraph for getExchange tool (not serialized)
+	RecentLeads        []models.Lead         `json:"recent_leads,omitempty"`     // for deduplication
+	SiteMapEntries     []models.SiteMapEntry `json:"site_map_entries,omitempty"` // all available endpoints with exchange_id
+	Graph              *models.InMemoryGraph `json:"-"`                          // InMemoryGraph for getExchange tool (not serialized)
 }
 
 // DetectiveAIResult represents the complete output from detective AI analysis
@@ -141,10 +142,11 @@ func DefineDetectiveAIFlow(
 					)
 
 					leadReq := &LeadGenerationRequest{
-						Observations:  significantObs, // Batch mode: all significant observations
-						ExistingLeads: req.RecentLeads,
-						BigPicture:    req.BigPicture,
-						Graph:         req.Graph, // InMemoryGraph for getExchange tool
+						Observations:   significantObs, // Batch mode: all significant observations
+						ExistingLeads:  req.RecentLeads,
+						SiteMapEntries: req.SiteMapEntries, // All available endpoints with exchange_id
+						BigPicture:     req.BigPicture,
+						Graph:          req.Graph, // InMemoryGraph for getExchange tool
 					}
 
 					leadResult, err := genkit.Run(
