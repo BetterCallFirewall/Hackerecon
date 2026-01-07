@@ -163,9 +163,11 @@ func (g *InMemoryGraph) GetRecentObservations(n int) []*Observation {
 	}
 
 	// Sort by CreatedAt descending (most recent first)
-	sort.Slice(observations, func(i, j int) bool {
-		return observations[i].CreatedAt.After(observations[j].CreatedAt)
-	})
+	sort.Slice(
+		observations, func(i, j int) bool {
+			return observations[i].CreatedAt.After(observations[j].CreatedAt)
+		},
+	)
 
 	// Return top n
 	if n > len(observations) {
@@ -343,8 +345,6 @@ func (g *InMemoryGraph) AddOrUpdateSiteMapEntry(entry *SiteMapEntry) string {
 
 	g.siteMap[entry.ID] = entry
 
-	// IMPORTANT FIX #2: Prune oldest site map entry if limit exceeded (FIFO)
-	// This prevents unbounded memory growth during long-running sessions
 	if len(g.siteMap) > g.maxSiteMapEntries {
 		g.pruneOldestSiteMapEntry()
 	}
@@ -416,9 +416,11 @@ func (g *InMemoryGraph) GetRecentLeads(limit int) []Lead {
 	}
 
 	// Sort by CreatedAt (newest first)
-	sort.Slice(leads, func(i, j int) bool {
-		return leads[i].CreatedAt.After(leads[j].CreatedAt)
-	})
+	sort.Slice(
+		leads, func(i, j int) bool {
+			return leads[i].CreatedAt.After(leads[j].CreatedAt)
+		},
+	)
 
 	if len(leads) > limit {
 		leads = leads[:limit]

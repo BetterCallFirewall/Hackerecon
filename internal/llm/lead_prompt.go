@@ -57,23 +57,12 @@ func BuildLeadGenerationPrompt(req *LeadGenerationRequest) string {
 		for i, obs := range req.Observations {
 			prompt += fmt.Sprintf("\n**Observation %d (ID: %s):**\n", i+1, obs.ID)
 			prompt += fmt.Sprintf("- What: %s\n", obs.What)
-			prompt += fmt.Sprintf("- Where: %s\n", obs.Where)
+			prompt += fmt.Sprintf("- Where: %s. Exchange_ID: %v\n", obs.Where, obs.ExchangeID)
 			prompt += fmt.Sprintf("- Why: %s\n", obs.Why)
 			// CRITICAL: Include Hint field if present
 			if obs.Hint != "" {
 				prompt += fmt.Sprintf("- **HINT**: %s\n", obs.Hint)
 			}
-		}
-	} else {
-		// Single observation mode (backward compatibility)
-		prompt += fmt.Sprintf("**New Observation (ID: %s):**\n", req.Observation.ID)
-		prompt += fmt.Sprintf("- What: %s\n", req.Observation.What)
-		prompt += fmt.Sprintf("- Where: %s\n", req.Observation.Where)
-		prompt += fmt.Sprintf("- Why: %s\n", req.Observation.Why)
-
-		// CRITICAL: Include Hint field if present
-		if req.Observation.Hint != "" {
-			prompt += fmt.Sprintf("- **HINT**: %s\n", req.Observation.Hint)
 		}
 	}
 
@@ -100,7 +89,7 @@ func BuildLeadGenerationPrompt(req *LeadGenerationRequest) string {
 		prompt += fmt.Sprintf("\n**Site Map (%d entries) - ALL AVAILABLE ENDPOINTS:**\n", len(req.SiteMapEntries))
 		prompt += "Each entry shows the endpoint URL, method, exchange_id (for getExchange tool), and comment.\n\n"
 		for i, entry := range req.SiteMapEntries {
-			prompt += fmt.Sprintf("%d. **%s %s** (exchange_id: %s)\n", i+1, entry.Method, entry.URL, entry.ID)
+			prompt += fmt.Sprintf("%d. **%s %s** (exchange_id: %s)\n", i+1, entry.Method, entry.URL, entry.ExchangeID)
 			if entry.Comment != "" {
 				prompt += "   Comment: " + entry.Comment + "\n"
 			}

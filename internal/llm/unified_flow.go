@@ -26,32 +26,6 @@ func enrichObservation(obs *models.Observation, exchangeID string) {
 	// id and created_at are handled by storage layer
 }
 
-// enrichConnection populates technical fields (id1, id2, created_at)
-// Business field (reason) is already filled by LLM
-func enrichConnection(conn *models.Connection, id1, id2 string) {
-	if conn.ID1 == "" {
-		conn.ID1 = id1
-	}
-	if conn.ID2 == "" {
-		conn.ID2 = id2
-	}
-	if conn.CreatedAt.IsZero() {
-		conn.CreatedAt = time.Now()
-	}
-}
-
-// enrichLead populates technical fields (id, created_at)
-// Business fields (title, actionable_step, pocs) are already filled by LLM
-// Updated: No longer populates ObservationID (many-to-many relationship via connections)
-func enrichLead(lead *models.Lead, _ string) {
-	if lead.ID == "" {
-		lead.ID = fmt.Sprintf("lead-%d", time.Now().UnixNano())
-	}
-	if lead.CreatedAt.IsZero() {
-		lead.CreatedAt = time.Now()
-	}
-}
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // Unified Analysis Flow - Atomic Genkit Flow
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -100,8 +74,10 @@ func DefineUnifiedAnalysisFlow(
 				}
 			}
 
-			log.Printf("✅ Unified analysis complete: comment=%s, observations_count=%d, connections_count=%d",
-				result.Comment, len(result.Observations), len(result.Connections))
+			log.Printf(
+				"✅ Unified analysis complete: comment=%s, observations_count=%d, connections_count=%d",
+				result.Comment, len(result.Observations), len(result.Connections),
+			)
 
 			return result, nil
 		},
