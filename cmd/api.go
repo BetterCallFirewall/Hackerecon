@@ -39,15 +39,39 @@ func StartAPIServer(analyzer *driven.GenkitSecurityAnalyzer) {
 		json.NewEncoder(w).Encode(map[string]string{
 			"status":  "ok",
 			"service": "hackerecon-api",
-			"flow":    "detective", // Indicate we're using detective flow
+			"flow":    "3-phase", // 3-phase agent flow
+		})
+	}))
+
+	// Deep analysis endpoint - triggers Strategist + Tactician pipeline
+	http.HandleFunc("/api/analyze-deep", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		log.Printf("📨 Received deep analysis request")
+
+		// Run deep analysis asynchronously (don't block HTTP response)
+		go func() {
+			if err := analyzer.RunDeepAnalysis(r.Context()); err != nil {
+				log.Printf("❌ Deep analysis failed: %v", err)
+			}
+		}()
+
+		// Return immediately
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"status": "started",
 		})
 	}))
 
 	// Запуск сервера
 	log.Println("📊 API Server запущен на http://localhost:8081")
 	log.Println("📡 Доступные endpoints:")
-	log.Println("   WS   /ws                           - WebSocket для live обновлений анализа (detective flow)")
+	log.Println("   WS   /ws                           - WebSocket для live обновлений анализа (3-phase flow)")
 	log.Println("   GET  /health                       - Health check")
+	log.Println("   POST /api/analyze-deep             - Trigger deep analysis (Strategist + Tactician)")
 
 	log.Fatal(http.ListenAndServe(":8081", nil))
 }

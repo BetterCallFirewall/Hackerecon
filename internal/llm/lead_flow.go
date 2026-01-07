@@ -1,13 +1,11 @@
 package llm
 
 import (
-	"context"
 	"fmt"
 	"log"
 
 	"github.com/BetterCallFirewall/Hackerecon/internal/models"
 	"github.com/firebase/genkit/go/ai"
-	genkitcore "github.com/firebase/genkit/go/core"
 	"github.com/firebase/genkit/go/genkit"
 )
 
@@ -45,12 +43,12 @@ func getExchangeToolHandler(toolCtx *ai.ToolContext, input GetExchangeInput) (Ge
 	return GetExchangeOutput{Exchange: *exchange}, nil
 }
 
-var getExchangeTool ai.ToolRef
+var GetExchangeTool ai.ToolRef
 
 // DefineGetExchangeTool registers the getExchange tool ONCE at initialization
 // Must be called before DefineLeadGenerationFlow
 func DefineGetExchangeTool(g *genkit.Genkit) {
-	getExchangeTool = genkit.DefineTool(
+	GetExchangeTool = genkit.DefineTool(
 		g,
 		"getExchange",
 		"Retrieves full HTTP request/response details for a specific exchange ID. Use this when you need to see exact headers, body, or status codes to generate accurate PoCs.",
@@ -60,47 +58,6 @@ func DefineGetExchangeTool(g *genkit.Genkit) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Lead Generation Flow - Atomic Genkit Flow
+// NOTE: DefineLeadGenerationFlow and related types removed - replaced by
+// new architect flows (strategist, tactician, analyst)
 // ═══════════════════════════════════════════════════════════════════════════════
-
-// DefineLeadGenerationFlow creates an atomic Genkit flow for lead generation
-// This flow is called separately after unified analysis completes
-func DefineLeadGenerationFlow(
-	g *genkit.Genkit,
-	modelName string,
-) *genkitcore.Flow[*LeadGenerationRequest, *LeadGenerationResponse, struct{}] {
-	return genkit.DefineFlow(
-		g,
-		"leadGenerationFlow",
-		func(ctx context.Context, req *LeadGenerationRequest) (*LeadGenerationResponse, error) {
-			log.Printf("💡 Starting lead generation for %d observation(s)", len(req.Observations))
-
-			// Build prompt
-			prompt := BuildLeadGenerationPrompt(req)
-
-			// Execute LLM call using genkit.GenerateData with tool support
-			log.Printf("🤖 Calling LLM for lead generation with getExchange tool")
-			result, _, err := genkit.GenerateData[LeadGenerationResponse](
-				ctx,
-				g,
-				ai.WithModelName(modelName),
-				ai.WithPrompt(prompt),
-				ai.WithTools(getExchangeTool),
-				ai.WithMiddleware(getMiddlewares()...),
-			)
-			if err != nil {
-				return nil, fmt.Errorf("LLM generation failed: %w", err)
-			}
-
-			log.Printf("✅ Lead generation complete: leads_count=%d", len(result.Leads))
-			for i, lead := range result.Leads {
-				log.Printf(
-					"   Lead %d: is_actionable=%v, title=%s, pocs_count=%d",
-					i, lead.IsActionable, lead.Title, len(lead.PoCs),
-				)
-			}
-
-			return result, nil
-		},
-	)
-}

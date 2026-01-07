@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/BetterCallFirewall/Hackerecon/internal/config"
+	"github.com/BetterCallFirewall/Hackerecon/internal/models"
 	"github.com/firebase/genkit/go/ai"
 	"github.com/firebase/genkit/go/genkit"
 	"github.com/firebase/genkit/go/plugins/compat_oai"
@@ -80,4 +81,36 @@ func TruncateString(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// TruncateBody truncates body to maxLen with truncation marker showing bytes omitted
+func TruncateBody(body string, maxLen int) string {
+	if len(body) <= maxLen {
+		return body
+	}
+	omitted := len(body) - maxLen
+	return body[:maxLen] + fmt.Sprintf("\n\n... [TRUNCATED: %d bytes omitted]", omitted)
+}
+
+// FormatObservations formats observations as a numbered list
+// If includeHint is true, adds the Hint field when present
+func FormatObservations(obs []models.Observation, includeHint bool) string {
+	result := ""
+	for i, o := range obs {
+		hint := ""
+		if includeHint && o.Hint != "" {
+			hint = fmt.Sprintf("\n   Hint: %s", o.Hint)
+		}
+		result += fmt.Sprintf("%d. %s\n   Where: %s\n   Why:%s%s\n\n", i+1, o.What, o.Where, o.Why, hint)
+	}
+	return result
+}
+
+// FormatSiteMap formats site map entries as a bulleted list
+func FormatSiteMap(entries []models.SiteMapEntry) string {
+	result := ""
+	for _, e := range entries {
+		result += fmt.Sprintf("- %s %s\n", e.Method, e.URL)
+	}
+	return result
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"strconv"
 	"strings"
 	"time"
 
@@ -15,64 +14,52 @@ import (
 	"github.com/firebase/genkit/go/genkit"
 )
 
-// GenkitSecurityAnalyzer implements the new detective flow
-// Simplified from ~1470 lines to ~300 lines by replacing 5-phase ReAct with 2-phase detective
+// GenkitSecurityAnalyzer implements the new 3-phase agent flow
+// Analyst → Strategist → Tactician
 type GenkitSecurityAnalyzer struct {
-	// Single orchestration flow for all AI operations
-	detectiveAIFlow *genkitcore.Flow[*llm.DetectiveAIRequest, *llm.DetectiveAIResult, struct{}]
+	// Individual agent flows (replaces detectiveAIFlow)
+	analystFlow    *genkitcore.Flow[*llm.AnalystRequest, *llm.AnalystResponse, struct{}]
+	strategistFlow *genkitcore.Flow[*llm.StrategistRequest, *llm.StrategistResult, struct{}]
+	tacticianFlow  *genkitcore.Flow[*llm.TacticianRequest, *llm.TacticianResult, struct{}]
 
-	// Storage (NOT part of Genkit flow)
+	// Storage
 	graph *models.InMemoryGraph
 
 	// WebSocket
 	wsHub *websocket.WebsocketManager
 }
 
-// NewGenkitSecurityAnalyzer creates a new analyzer with the detective flow
+// NewGenkitSecurityAnalyzer creates a new analyzer with the 3-phase agent flow
 func NewGenkitSecurityAnalyzer(
 	genkitApp *genkit.Genkit,
-	modelName string,
+	modelNameFast string,
+	modelNameSmart string,
 	wsHub *websocket.WebsocketManager,
 ) *GenkitSecurityAnalyzer {
-	// Define tools FIRST (before flows that use them)
+	// Define tools FIRST
 	llm.DefineGetExchangeTool(genkitApp)
 
-	// Create atomic flows
-	unifiedFlow := llm.DefineUnifiedAnalysisFlow(genkitApp, modelName)
-	reflectionFlow := llm.DefineReflectionFlow(genkitApp, modelName)
-	leadFlow := llm.DefineLeadGenerationFlow(genkitApp, modelName)
-
-	// Create orchestration flow with function wrappers
-	detectiveFlow := llm.DefineDetectiveAIFlow(
-		genkitApp,
-		func(ctx context.Context, req *llm.UnifiedAnalysisRequest) (*llm.UnifiedAnalysisResponse, error) {
-			return unifiedFlow.Run(ctx, req)
-		},
-		func(ctx context.Context, req *llm.ReflectionRequest) (*llm.ReflectionResponse, error) {
-			return reflectionFlow.Run(ctx, req)
-		},
-		func(ctx context.Context, req *llm.LeadGenerationRequest) (*llm.LeadGenerationResponse, error) {
-			return leadFlow.Run(ctx, req)
-		},
-	)
+	// Create agent flows with different models
+	analystFlow := llm.DefineAnalystFlow(genkitApp, modelNameFast)
+	strategistFlow := llm.DefineStrategistFlow(genkitApp, modelNameSmart)
+	tacticianFlow := llm.DefineTacticianFlow(genkitApp, modelNameSmart)
 
 	// Create in-memory graph
 	graph := models.NewInMemoryGraph()
-
-	// Set global graph reference for tool handlers (e.g., getExchange)
-	// Must be set before any tool calls can happen
 	models.SetGlobalInMemoryGraph(graph)
 	log.Printf("✅ Global InMemoryGraph reference set for tool access")
 
 	return &GenkitSecurityAnalyzer{
-		detectiveAIFlow: detectiveFlow,
-		graph:           graph,
-		wsHub:           wsHub,
+		analystFlow:    analystFlow,
+		strategistFlow: strategistFlow,
+		tacticianFlow:  tacticianFlow,
+		graph:          graph,
+		wsHub:          wsHub,
 	}
 }
 
-// AnalyzeHTTPTraffic analyzes HTTP traffic using the detective flow
-// This is the MAIN entry point - simplifies the old 5-phase flow to 2-phase
+// AnalyzeHTTPTraffic analyzes HTTP traffic using the analyst flow (Phase 1)
+// This is the MAIN entry point - processes each request through Analyst only
 func (a *GenkitSecurityAnalyzer) AnalyzeHTTPTraffic(
 	ctx context.Context,
 	method, url string,
@@ -81,16 +68,13 @@ func (a *GenkitSecurityAnalyzer) AnalyzeHTTPTraffic(
 	statusCode int,
 ) error {
 	// STEP 1: Request Filter (heuristic, NO LLM)
-	// This gives us 60-70% reduction in LLM calls by skipping static assets, health checks, etc.
-	// IMPORTANT: Filter BEFORE storage to avoid storing 60-70% of traffic that will be skipped
 	skipReason := a.shouldSkipRequest(method, url, statusCode, respHeaders, respBody)
 	if skipReason != "" {
-		// Store in site map only (not main exchange store)
 		log.Printf("⚪ Skipping %s %s: %s", method, url, skipReason)
 		return nil
 	}
 
-	// STEP 2: Store exchange (only for requests that pass filter)
+	// STEP 2: Store exchange
 	exchange := models.HTTPExchange{
 		Request: models.RequestPart{
 			Method:  method,
@@ -110,137 +94,139 @@ func (a *GenkitSecurityAnalyzer) AnalyzeHTTPTraffic(
 	log.Printf("🔍 Analyzing %s %s", method, url)
 	log.Printf("💾 Stored exchange %s", exchangeID)
 
-	// STEP 2.5: Prepare exchange for LLM (truncate large bodies to save tokens)
-	exchangeForLLM := a.prepareExchangeForLLM(exchange)
-
-	// STEP 2.6: Store current request in site map BEFORE AI analysis
-	// This ensures the LLM can see the current request in the site map context
-	// We store with empty comment first, then update it after AI analysis
-	siteMapEntryID := a.storeInSiteMap(
+	// STEP 3: Store in site map
+	_ = a.storeInSiteMap(
 		method, url, exchangeID,
 		reqHeaders, respHeaders,
 		reqBody, respBody,
 		statusCode,
-		"", // Empty comment - will be updated after AI analysis
+		"",
 	)
-	log.Printf("🗺️ Stored site map entry %s for %s %s", siteMapEntryID, method, url)
 
-	// STEP 3: SINGLE AI orchestration flow (unified + lead)
-	// Get all site map entries for context (now includes current request)
-	siteMapEntries := a.graph.GetAllSiteMapEntries()
-	log.Printf("🗺️ Site map contains %d endpoints", len(siteMapEntries))
-	aiResult, err := a.detectiveAIFlow.Run(
-		ctx, &llm.DetectiveAIRequest{
-			Exchange:           exchangeForLLM,
-			BigPicture:         a.graph.GetBigPicture(),
-			RecentObservations: a.getAllObservations(),
-			RecentLeads:        a.graph.GetRecentLeads(20),
-			SiteMapEntries:     convertSiteMapEntries(siteMapEntries), // All available endpoints with exchange_id
-			Graph:              a.graph,                               // InMemoryGraph for getExchange tool
+	// STEP 4: Prepare exchange for LLM (truncated)
+	exchangeForLLM := a.prepareExchangeForLLM(exchange)
+
+	// STEP 5: AnalystFlow (Phase 1 only)
+	analystResult, err := a.analystFlow.Run(
+		ctx, &llm.AnalystRequest{
+			Exchange: exchangeForLLM,
 		},
 	)
 	if err != nil {
-		return fmt.Errorf("detective AI failed: %w", err)
+		log.Printf("⚠️ Analyst failed for %s: %v", url, err)
+		// Don't block - continue with empty observations
+		analystResult = &llm.AnalystResponse{Observations: []models.Observation{}}
 	}
 
-	// STEP 4: Apply results to storage (OUTSIDE Genkit flow)
-	// Storage operations are separate from LLM operations
-	a.applyAIResult(exchangeID, siteMapEntryID, exchange, aiResult)
+	// STEP 6: Store raw observations
+	for i := range analystResult.Observations {
+		obsID := a.graph.AddRawObservation(&analystResult.Observations[i])
+		log.Printf("💡 Raw observation %s: %s", obsID, analystResult.Observations[i].What)
+	}
 
-	// STEP 5: SINGLE WebSocket message
-	// Replaces multiple broadcasts from old flow
+	// STEP 7: WebSocket with FULL exchange (not truncated)
 	a.wsHub.Broadcast(
-		websocket.DetectiveDTO{
+		websocket.AnalystDTO{
 			ExchangeID:   exchangeID,
 			Method:       method,
 			URL:          url,
 			StatusCode:   statusCode,
-			Comment:      aiResult.Comment,
-			Observations: aiResult.Observations,
-			Connections:  aiResult.Connections,
-			BigPicture:   a.graph.GetBigPicture(),
-			Leads:        aiResult.Leads,
+			Exchange:     exchange, // FULL exchange, not exchangeForLLM
+			Observations: analystResult.Observations,
 		},
 	)
 
-	log.Printf("✅ Analysis complete for %s %s", method, url)
+	log.Printf("✅ Analyst complete for %s %s", method, url)
 	return nil
 }
 
-// applyAIResult stores AI results (storage operations separate from LLM)
-func (a *GenkitSecurityAnalyzer) applyAIResult(
-	exchangeID string,
-	siteMapEntryID string,
-	exchange models.HTTPExchange,
-	aiResult *llm.DetectiveAIResult,
-) {
-	// Store all observations
-	for i := range aiResult.Observations {
-		aiResult.Observations[i].ExchangeID = exchangeID
-		obsID := a.graph.AddObservation(&aiResult.Observations[i])
+// RunDeepAnalysis runs the Strategist and Tactician phases (Phases 2-3)
+// This is called separately (not per-request) to aggregate and analyze raw observations
+func (a *GenkitSecurityAnalyzer) RunDeepAnalysis(ctx context.Context) error {
+	log.Printf("🚀 Starting deep analysis")
 
-		log.Printf("💡 Added observation %s", obsID)
-		log.Printf("   - What: %s", aiResult.Observations[i].What)
-		log.Printf("   - Where: %s", aiResult.Observations[i].Where)
-		log.Printf("   - Why: %s", aiResult.Observations[i].Why)
+	// STEP 1: Get and clear raw buffer atomically
+	rawBuffer := a.graph.GetAndClearRawBuffer()
+	if len(rawBuffer) == 0 {
+		log.Printf("⚠️ No raw observations to analyze")
+		return nil
 	}
+	log.Printf("📊 Processing %d raw observations", len(rawBuffer))
 
-	// Update BigPicture
-	if aiResult.BigPictureImpact != nil {
-		if err := a.graph.UpdateBigPictureWithImpact(aiResult.BigPictureImpact); err != nil {
-			log.Printf("⚠️ Failed to update BigPicture: %v", err)
-		} else {
-			log.Printf(
-				"🖼️ Updated BigPicture: %s = %s", aiResult.BigPictureImpact.Field, aiResult.BigPictureImpact.Value,
-			)
+	// STEP 2: Strategist
+	siteMapEntries := a.graph.GetAllSiteMapEntries()
+	strategistResult, err := a.strategistFlow.Run(
+		ctx, &llm.StrategistRequest{
+			RawObservations: rawBuffer,
+			SiteMap:         convertSiteMapEntries(siteMapEntries),
+			BigPicture:      a.graph.GetBigPicture(),
+		},
+	)
+	if err != nil {
+		// Restore raw buffer on failure
+		for i := range rawBuffer {
+			a.graph.AddRawObservation(&rawBuffer[i])
 		}
+		log.Printf("⚠️ Strategist failed, restored %d raw observations to buffer", len(rawBuffer))
+		return fmt.Errorf("strategist failed: %w", err)
 	}
 
-	// Update site map entry with AI-generated comment
-	if aiResult.SiteMapComment != "" {
-		entry := &models.SiteMapEntry{
-			ID:         siteMapEntryID, // Use the ID from earlier storage
-			ExchangeID: exchange.ID,
-			Method:     exchange.Request.Method,
-			URL:        exchange.Request.URL,
-			Comment:    aiResult.SiteMapComment,
-			Request: models.RequestPart{
-				Method:  exchange.Request.Method,
-				URL:     exchange.Request.URL,
-				Headers: exchange.Request.Headers,
-				Body:    exchange.Request.Body,
-			},
-			Response: models.ResponsePart{
-				StatusCode: exchange.Response.StatusCode,
-				Headers:    exchange.Response.Headers,
-				Body:       exchange.Response.Body,
-			},
-		}
-		a.graph.AddOrUpdateSiteMapEntry(entry)
-		log.Printf("🗺️ Updated site map entry %s with comment", siteMapEntryID)
+	// STEP 3: Store aggregated observations
+	for i := range strategistResult.Observations {
+		obsID := a.graph.AddObservation(&strategistResult.Observations[i])
+		log.Printf("💡 Aggregated observation %s", obsID)
 	}
 
-	// Store all leads from AI result
-	// New architecture: Leads are standalone entities without ObservationID
-	// Connections (from AI result) link leads to observations
-	// Step 1: Store all leads (without ObservationID)
-	for _, leadData := range aiResult.Leads {
-		lead := models.Lead{
-			Title:          leadData.Title,
-			ActionableStep: leadData.ActionableStep,
-			PoCs:           leadData.PoCs,
-			CreatedAt:      time.Now(),
-		}
-		leadID := a.graph.AddLead(&lead)
-		log.Printf("🎯 Added lead %s: %s", leadID, lead.Title)
-	}
-
-	// Step 2: Store all connections (including lead↔obs)
-	// Note: AI result now includes connections with actual entity IDs
-	for _, conn := range aiResult.Connections {
+	// STEP 4: Store connections
+	for _, conn := range strategistResult.Connections {
 		a.graph.AddConnection(conn.ID1, conn.ID2, conn.Reason)
 		log.Printf("🔗 Connection: %s <-> %s", conn.ID1, conn.ID2)
 	}
+
+	// STEP 5: Update BigPicture
+	if strategistResult.BigPictureImpact != nil {
+		if err := a.graph.UpdateBigPictureWithImpact(strategistResult.BigPictureImpact); err != nil {
+			log.Printf("⚠️ Failed to update BigPicture: %v", err)
+		}
+	}
+
+	// STEP 6: Tactician for each task
+	allLeads := []models.Lead{}
+	for _, task := range strategistResult.TacticianTasks {
+		tacticianResult, err := a.tacticianFlow.Run(
+			ctx, &llm.TacticianRequest{
+				Task:       task,
+				BigPicture: a.graph.GetBigPicture(),
+				SiteMap:    convertSiteMapEntries(siteMapEntries),
+				Graph:      a.graph, // For getExchange tool
+			},
+		)
+		if err != nil {
+			log.Printf("⚠️ Tactician failed for task %s: %v", task.Description, err)
+			continue // Continue with next task
+		}
+
+		// Store leads
+		for _, lead := range tacticianResult.Leads {
+			leadID := a.graph.AddLead(&lead)
+			log.Printf("🎯 Lead %s: %s", leadID, lead.Title)
+			allLeads = append(allLeads, lead)
+		}
+	}
+
+	// STEP 7: WebSocket with final results
+	a.wsHub.Broadcast(
+		websocket.DeepAnalysisDTO{
+			Observations: strategistResult.Observations,
+			Connections:  strategistResult.Connections,
+			Leads:        allLeads,
+			BigPicture:   a.graph.GetBigPicture(),
+		},
+	)
+
+	log.Printf("✅ Deep analysis complete: %d obs, %d leads",
+		len(strategistResult.Observations), len(allLeads))
+	return nil
 }
 
 // shouldSkipRequest checks if a request should be skipped using heuristic filtering
@@ -263,7 +249,7 @@ func (a *GenkitSecurityAnalyzer) shouldSkipRequest(method, url string, statusCod
 	}
 
 	// Skip large responses
-	if len(respBody) > 1000000 { // 1MB
+	if len(respBody) > maxResponseSize {
 		return "large response"
 	}
 
@@ -311,26 +297,6 @@ func isSkippableContentType(contentType string) bool {
 		}
 	}
 	return false
-}
-
-// getAllObservations gets recent observations with a configurable limit
-// CRITICAL FIX: Limit prevents token explosion after many requests
-// Default limit of 100 prevents ~150K token prompts after 1000+ requests
-func (a *GenkitSecurityAnalyzer) getAllObservations() []models.Observation {
-	const maxObservations = 100 // Configurable limit to prevent token explosion
-
-	// Get recent observations with limit
-	obsPointers := a.graph.GetRecentObservations(maxObservations)
-	observations := make([]models.Observation, len(obsPointers))
-	for i, obs := range obsPointers {
-		observations[i] = *obs
-	}
-
-	if len(obsPointers) >= maxObservations {
-		log.Printf("⚠️ Observation limit reached: using %d most recent observations", maxObservations)
-	}
-
-	return observations
 }
 
 // storeInSiteMap stores an entry in the site map
@@ -382,7 +348,8 @@ func (a *GenkitSecurityAnalyzer) GetWsHub() *websocket.WebsocketManager {
 }
 
 const (
-	maxBodySizeForLLM = 10_000 // 10KB limit for LLM analysis
+	maxBodySizeForLLM = 10_000    // 10KB limit for LLM analysis
+	maxResponseSize   = 1_000_000 // 1MB max response size
 )
 
 // prepareExchangeForLLM creates a copy of exchange with truncated bodies for LLM analysis
@@ -392,23 +359,17 @@ func (a *GenkitSecurityAnalyzer) prepareExchangeForLLM(exchange models.HTTPExcha
 
 	// Truncate request body if needed
 	if len(exchange.Request.Body) > maxBodySizeForLLM {
-		result.Request.Body = truncateBody(exchange.Request.Body)
+		result.Request.Body = llm.TruncateBody(exchange.Request.Body, maxBodySizeForLLM)
 		log.Printf("⚠️ Truncated request body for LLM: %d → %d bytes", len(exchange.Request.Body), maxBodySizeForLLM)
 	}
 
 	// Truncate response body if needed
 	if len(exchange.Response.Body) > maxBodySizeForLLM {
-		result.Response.Body = truncateBody(exchange.Response.Body)
+		result.Response.Body = llm.TruncateBody(exchange.Response.Body, maxBodySizeForLLM)
 		log.Printf("⚠️ Truncated response body for LLM: %d → %d bytes", len(exchange.Response.Body), maxBodySizeForLLM)
 	}
 
 	return result
-}
-
-// truncateBody truncates body to maxBodySizeForLLM and adds a marker
-func truncateBody(body string) string {
-	omitted := len(body) - maxBodySizeForLLM
-	return body[:maxBodySizeForLLM] + "\n\n... [TRUNCATED: " + strconv.Itoa(omitted) + " bytes omitted]"
 }
 
 // convertSiteMapEntries converts []*models.SiteMapEntry to []models.SiteMapEntry

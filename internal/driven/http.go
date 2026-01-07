@@ -34,9 +34,9 @@ func NewSecurityProxyWithGenkit(cfg config.LLMConfig, wsHub *websocket.Websocket
 		return nil, fmt.Errorf("failed to initialize Genkit: %w", err)
 	}
 
-	// Создаём analyzer с new signature (no provider needed)
-	analyzer := NewGenkitSecurityAnalyzer(genkitApp, cfg.Model, wsHub)
-	log.Printf("✅ LLM провайдер: %s (модель: %s)", cfg.Provider, cfg.Model)
+	// Создаём analyzer with 3-phase agent flow
+	analyzer := NewGenkitSecurityAnalyzer(genkitApp, cfg.LLMModelFast, cfg.LLMModelSmart, wsHub)
+	log.Printf("✅ LLM провайдер: %s (fast: %s, smart: %s)", cfg.Provider, cfg.LLMModelFast, cfg.LLMModelSmart)
 
 	return &SecurityProxyWithGenkit{
 		port:            cfg.Port,

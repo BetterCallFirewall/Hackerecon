@@ -3,9 +3,14 @@ package models
 import (
 	"fmt"
 	"sort"
-	"strings"
 	"sync"
 	"time"
+)
+
+const (
+	DefaultMaxObservations   = 1000 // Default limit for observations
+	DefaultMaxSiteMapEntries = 500  // Default limit for site map entries
+	DefaultMaxRawBuffer      = 500  // Default limit for raw observation buffer
 )
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -61,11 +66,17 @@ type InMemoryGraph struct {
 	// IMPORTANT FIX #1: Configurable limit to prevent unbounded memory growth
 	maxObservations   int
 	maxSiteMapEntries int
+
+	// Raw observation buffer for Analyst (3-phase flow)
+	rawObservations []Observation
+	rawMu           sync.Mutex
+	maxRawBuffer    int // Configurable limit to prevent unbounded raw buffer growth
 }
 
 // NewInMemoryGraph creates a new in-memory graph
 // IMPORTANT FIX #1: Initialize with configurable max observations limit (default: 1000)
 // IMPORTANT FIX #2: Initialize with configurable max site map entries limit (default: 500)
+// IMPORTANT FIX #3: Initialize with configurable max raw buffer limit (default: 500)
 func NewInMemoryGraph() *InMemoryGraph {
 	return &InMemoryGraph{
 		exchanges:         make(map[string]*HTTPExchange),
@@ -74,8 +85,9 @@ func NewInMemoryGraph() *InMemoryGraph {
 		connections:       make([]*Connection, 0),
 		siteMap:           make(map[string]*SiteMapEntry),
 		bigPicture:        &BigPicture{},
-		maxObservations:   1000, // Configurable limit to prevent unbounded memory growth
-		maxSiteMapEntries: 500,  // Configurable limit to prevent unbounded site map growth
+		maxObservations:   DefaultMaxObservations,
+		maxSiteMapEntries: DefaultMaxSiteMapEntries,
+		maxRawBuffer:      DefaultMaxRawBuffer,
 	}
 }
 
@@ -268,21 +280,14 @@ func (g *InMemoryGraph) GetConnectionsForEntity(entityID string) []*Connection {
 	return connections
 }
 
-// UpdateBigPicture updates the big picture with new values
-func (g *InMemoryGraph) UpdateBigPicture(description, functionalities, technologies string) {
+// UpdateBigPicture updates the big picture with new description
+func (g *InMemoryGraph) UpdateBigPicture(description string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
 	if description != "" {
 		g.bigPicture.Description = description
 	}
-	if functionalities != "" {
-		g.bigPicture.Functionalities = functionalities
-	}
-	if technologies != "" {
-		g.bigPicture.Technologies = technologies
-	}
-	g.bigPicture.LastUpdated = time.Now().Unix()
 }
 
 // UpdateBigPictureWithImpact applies a BigPictureImpact directly (NO confidence check)
@@ -294,22 +299,12 @@ func (g *InMemoryGraph) UpdateBigPictureWithImpact(impact *BigPictureImpact) err
 	if impact == nil {
 		return fmt.Errorf("impact cannot be nil")
 	}
-	if impact.Field == "" {
-		return fmt.Errorf("impact field cannot be empty")
-	}
 
-	switch strings.ToLower(impact.Field) {
-	case "description":
+	// Only update description field
+	if impact.Value != "" {
 		g.bigPicture.Description = impact.Value
-	case "functionalities":
-		g.bigPicture.Functionalities = impact.Value
-	case "technologies":
-		g.bigPicture.Technologies = impact.Value
-	default:
-		return fmt.Errorf("unknown field: %s", impact.Field)
 	}
 
-	g.bigPicture.LastUpdated = time.Now().Unix()
 	return nil
 }
 
@@ -491,4 +486,47 @@ func (g *InMemoryGraph) pruneOldestSiteMapEntry() {
 	if oldestID != "" {
 		delete(g.siteMap, oldestID)
 	}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Raw Observation Buffer (3-Phase Flow)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// AddRawObservation adds a raw observation from Analyst
+// IMPORTANT FIX #3: Prune oldest raw observation if limit exceeded (FIFO)
+func (g *InMemoryGraph) AddRawObservation(observation *Observation) string {
+	g.rawMu.Lock()
+	defer g.rawMu.Unlock()
+
+	// IMPORTANT FIX #3: Prune oldest raw observation if limit exceeded (FIFO)
+	// This prevents unbounded memory growth during long-running sessions
+	if len(g.rawObservations) >= g.maxRawBuffer {
+		// Remove oldest (first element) - FIFO
+		g.rawObservations = g.rawObservations[1:]
+	}
+
+	g.observationCount++
+	id := fmt.Sprintf("raw-%d", g.observationCount)
+
+	stored := *observation
+	stored.ID = id
+	if stored.CreatedAt.IsZero() {
+		stored.CreatedAt = time.Now()
+	}
+
+	g.rawObservations = append(g.rawObservations, stored)
+	return id
+}
+
+// GetAndClearRawBuffer returns all raw observations and clears the buffer atomically
+func (g *InMemoryGraph) GetAndClearRawBuffer() []Observation {
+	g.rawMu.Lock()
+	defer g.rawMu.Unlock()
+
+	result := make([]Observation, len(g.rawObservations))
+	copy(result, g.rawObservations)
+
+	g.rawObservations = []Observation{} // Clear buffer
+
+	return result
 }

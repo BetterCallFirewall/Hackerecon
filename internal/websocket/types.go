@@ -16,3 +16,21 @@ type DetectiveDTO struct {
 	BigPicture   *models.BigPicture   `json:"big_picture,omitempty"`
 	Leads        []models.Lead        `json:"leads,omitempty"` // Included if generated
 }
+
+// AnalystDTO - real-time result from Analyst
+type AnalystDTO struct {
+	ExchangeID   string               `json:"exchange_id"`
+	Method       string               `json:"method"`
+	URL          string               `json:"url"`
+	StatusCode   int                  `json:"status_code"`
+	Exchange     models.HTTPExchange  `json:"exchange"`     // FULL exchange
+	Observations []models.Observation `json:"observations"` // Raw observations
+}
+
+// DeepAnalysisDTO - result from Strategist + Tactician
+type DeepAnalysisDTO struct {
+	Observations []models.Observation `json:"observations"`
+	Connections  []models.Connection  `json:"connections"`
+	Leads        []models.Lead        `json:"leads"`
+	BigPicture   *models.BigPicture   `json:"big_picture"`
+}
