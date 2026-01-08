@@ -174,7 +174,10 @@ func (a *GenkitSecurityAnalyzer) RunDeepAnalysis(ctx context.Context) error {
 	// STEP 3: Store aggregated observations
 	for i := range strategistResult.Observations {
 		obsID := a.graph.AddObservation(&strategistResult.Observations[i])
-		log.Printf("💡 Aggregated observation %s", obsID)
+		log.Printf(
+			"💡 Aggregated observation %s\n  - What: %v\n  - Why: %v", obsID, strategistResult.Observations[i].What,
+			strategistResult.Observations[i].Why,
+		)
 	}
 
 	// STEP 4: Store connections
@@ -224,8 +227,10 @@ func (a *GenkitSecurityAnalyzer) RunDeepAnalysis(ctx context.Context) error {
 		},
 	)
 
-	log.Printf("✅ Deep analysis complete: %d obs, %d leads",
-		len(strategistResult.Observations), len(allLeads))
+	log.Printf(
+		"✅ Deep analysis complete: %d obs, %d leads",
+		len(strategistResult.Observations), len(allLeads),
+	)
 	return nil
 }
 

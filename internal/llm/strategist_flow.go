@@ -25,12 +25,21 @@ type StrategistResult struct {
 	Connections      []models.Connection      `json:"connections"`
 	BigPictureImpact *models.BigPictureImpact `json:"big_picture_impact,omitempty"`
 	TacticianTasks   []TacticianTask          `json:"tactician_tasks"`
+	TechnicalProfile *TechnicalProfile        `json:"technical_profile,omitempty"`
 }
 
 // TacticianTask - task for Tactician agent
 type TacticianTask struct {
 	Observations []models.Observation `json:"observations"`
 	Description  string               `json:"description"`
+}
+
+// TechnicalProfile represents the analyzed tech stack
+type TechnicalProfile struct {
+	Database     string `json:"database,omitempty" jsonschema:"description=Detected database (e.g., MongoDB, PostgreSQL, MySQL)"`
+	Backend      string `json:"backend,omitempty" jsonschema:"description=Detected backend framework (e.g., Node/Express, Python/Django)"`
+	Architecture string `json:"architecture,omitempty" jsonschema:"description=API architecture (e.g., REST, GraphQL)"`
+	Notes        string `json:"notes,omitempty" jsonschema:"description=Additional observations about the tech stack"`
 }
 
 // DefineStrategistFlow creates the Strategist Genkit flow
