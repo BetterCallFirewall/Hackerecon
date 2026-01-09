@@ -51,86 +51,111 @@ STEP 1 - MERGE: Scan for duplicates
   - Collect ALL exchange_ids from merged observations
   - Example: obs-1 (JWT in /api/auth, exch-1) + obs-5 (JWT in /api/auth, exch-9) → single obs with [exch-1, exch-9]
 
-STEP 2 - THREAT MODELING (USE SYSTEM ARCHITECTURE ABOVE):
+STEP 2 - THREAT MODELING (USE INDICATORS, NOT JUST CONFIRMATIONS):
 
-You receive SystemArchitecture from the Architect (shown in "=== SYSTEM ARCHITECTURE ===" section above).
-USE IT for stack-specific threat modeling based on the TechStack and DataFlows provided.
+Generate tasks based on TECHNOLOGY INDICATORS, even if tech stack is not 100%% confirmed.
 
-STACK-SPECIFIC ATTACK VECTORS:
+APPROACH: [Indicator] → [Hypothesis] → [Task]
 
-IF TechStack mentions "MongoDB":
-  • NoSQLi in URL params: /api/item/507f1f... → /api/item/{"$ne":null}
-  • NoSQLi in JSON body: {"user":{"$ne":null}, "pass":{"$ne":null}}
-  • Regex extraction: {"password":{"$regex":".*"}}
-  • Operator injection: {"$gt":""}, {"$in":[...]}
+RULE: Single observation with Type="MongoDB ObjectID" → Generate NoSQLi task immediately
+DO NOT wait for multiple confirmations - be AGGRESSIVE in hypothesis generation.
 
-IF TechStack mentions "PostgreSQL" OR "MySQL":
+INDICATOR-TO-VULNERABILITY MAPPING:
+
+• Indicator: Type="MongoDB ObjectID" OR 24-char hex ID in URL
+  → Hypothesis: Backend is MongoDB
+  → Task: Send GET /api/users/{\"$ne\":null} and check if status code is 200
+
+• Indicator: Type="Integer ID" OR integer IDs in URL
+  → Hypothesis: Backend is SQL database
+  → Task: Send GET /api/users/1 OR 1=1-- and check for SQLi errors
+
+• Indicator: Type="UUID"
+  → Hypothesis: UUIDs are random, but check access controls
+  → Task: Send GET /api/files/{OTHER_UUID} to test IDOR
+
+• Indicator: Type="JWT Token" OR JWT in headers
+  → Hypothesis: Stateless auth with potential verification bypass
+  → Task: Test alg=none by removing signature from JWT
+
+SYSTEM ARCHITECTURE (from Architect):
+(See "=== SYSTEM ARCHITECTURE ===" section at top of prompt)
+
+USE SystemArchitecture for CONTEXT, but don't require confirmation:
+- If Architect says "MongoDB" → HIGH confidence, generate NoSQLi tasks
+- If observations show "MongoDB ObjectID" → MEDIUM confidence, STILL generate NoSQLi tasks
+- If only one observation shows hex ID → LOW confidence, GENERATE ANYWAY (let Tactician validate)
+
+TECHNOLOGY-SPECIFIC ATTACK VECTORS (for reference):
+
+MongoDB:
+  • NoSQLi in URL params: /api/item/507f1f... → /api/item/{\"$ne\":null}
+  • NoSQLi in JSON body: {\"user\":{\"$ne\":null}, \"pass\":{\"$ne\":null}}
+  • Regex extraction: {\"password\":{\"$regex\":\".*\"}}
+  • Operator injection: {\"$gt\":\"\"}, {\"$in\":[...]}
+
+PostgreSQL/MySQL:
   • SQLi in string params: ' OR '1'='1
   • UNION-based extraction: ' UNION SELECT username,password FROM users--
   • Boolean-based: ' AND 1=1 (true) vs ' AND 1=2 (false)
 
-IF TechStack mentions "Python" OR "Jinja2":
+Jinja2/Python:
   • SSTI: {{7*7}} → {{config.items()}}
   • Template injection: {{''.__class__.__mro__[1].__subclasses__()[40]('/etc/passwd').read()}}
 
-IF TechStack mentions "JWT":
+JWT:
   • alg=none attack: Remove signature, change payload
   • Weak secret: Brute force with jwt-cracker
   • Key confusion: RSA → HMAC
 
-DATA FLOW ATTACK SURFACE:
-
-For each DataFlow chain:
-- Analyze the ROUTE CHAIN for injection points
-- Look for: URL parameters, JSON bodies, query strings
-- Cross-reference with InferredLogic to find vulnerabilities
-
-EXAMPLE:
-If DataFlow is "POST /api/upload --> GET /api/files/:id"
-And Logic says "retrieval by ID"
-And TechStack says "MongoDB"
-→ TASK: Test NoSQLi in GET /api/files/{'$ne':null}
-
-STEP 3 - PER DATAFLOW ANALYSIS:
+STEP 3 - PER DATAFLOW ANALYSIS (AGGRESSIVE TASK GENERATION):
 
 FOR EACH DataFlow in SystemArchitecture.DataFlows:
-1. Analyze THIS chain:
+1. Analyze THIS chain for indicators:
    - Input points: Where does user-controlled data enter?
    - Transformations: How is it processed/sanitized?
    - Sink points: Where does it end up (DB query, file system, response)?
 
-2. Apply stack-specific attack vectors:
-   IF TechStack contains "MongoDB" AND DataFlow has ID in URL
-   → Create task for NoSQLi in that specific endpoint
+2. Apply indicator-based attack vectors (AGGRESSIVE MODE):
+   IF DataFlow has ID in URL (regardless of TechStack confirmation):
+   → Check observation Type field:
+     • Type="MongoDB ObjectID" → NoSQLi task: "Send GET /api/ENDPOINT/{\"$ne\":null}"
+     • Type="Integer ID" → IDOR task: "Try sequential IDs: current-1, current+1"
+     • Type="UUID" → IDOR task: "Try random UUID from other endpoint"
 
-   IF TechStack contains "PostgreSQL"/"MySQL" AND DataFlow has ID in URL
-   → Create task for SQLi in that specific endpoint
+   IF DataFlow has user input in HTML context:
+   → Check TechStack for frontend framework:
+     • "React"/"Vue"/"Angular" → XSS task: "Inject <img src=x onerror=alert(1)>"
+     • No framework detected → Generic XSS task: "Try <script>alert(1)</script>"
 
-   IF TechStack contains "Jinja2"/"Python" AND DataFlow has user input
-   → Create task for SSTI via template injection
+   IF DataFlow has URL parameter (redirect_url, next, etc.):
+   → SSRF/Open Redirect task: "Try redirect_url=http://169.254.169.254/latest/meta-data/"
 
-   IF TechStack contains "React"/"Vue"/"JavaScript"/"Angular" AND DataFlow has user input in HTML context
-   → Create task for XSS via reflected or stored injection
+3. Output TacticianTask with SPECIFIC payloads (not generic "test for X"):
 
-   IF TechStack contains "requests"/"httpx"/"fetch"/"axios" AND DataFlow has URL parameter
-   → Create task for SSRF via internal endpoint access (metadata APIs, internal IPs)
+   ❌ BAD: "Test for NoSQL injection"
+   ✅ GOOD: "Send GET /api/files/{\"$ne\":null} and check if status code is 200"
 
-For other technologies in the stack, apply standard OWASP Top 10 vectors:
-- IDOR (insecure direct object reference) - sequential IDs, user-controlled identifiers
-- XXE (XML external entity) - XML parsing libraries
-- Insecure deserialization - pickle, JSON, YAML libraries
-- Command injection - shell execution, os.system, subprocess
-- File inclusion - local/remote file inclusion via path traversal
+   ❌ BAD: "Check for IDOR vulnerability"
+   ✅ GOOD: "Send GET /api/users/12346 (sequential ID) to test IDOR"
 
-3. Output ONE TacticianTask per vulnerable DataFlow with:
-   - dataflow: The specific chain route (e.g., "POST /api/shop/ --> GET /api/shop/:id")
-   - observation_ids: Only observations related to THIS chain
-   - description: Specific to this chain's vulnerability
+   ❌ BAD: "Test JWT authentication"
+   ✅ GOOD: "Modify JWT payload, set alg=none, remove signature, resend request"
+
+   Task format:
+   - dataflow: "POST /api/upload --> GET /api/files/:id"
+   - observation_ids: ["obs-1", "obs-3"] (only related to this chain)
+   - description: "Send GET /api/files/{\"$ne\":null} and check if status code is 200. This bypasses ObjectID validation in MongoDB query by using $ne operator."
+
+4. Generate MULTIPLE tasks per DataFlow if multiple indicators exist:
+   - One task for NoSQLi (if MongoDB indicator)
+   - One task for IDOR (if sequential ID pattern)
+   - One task for authentication bypass (if JWT present)
 
 IMPORTANT:
-- One task per DataFlow (if vulnerable)
-- Not one task per vulnerability type
-- Skip DataFlows that have no exploitable vulnerabilities
+- Generate tasks AGGRESSIVELY - let Tactician validate via actual HTTP requests
+- Better to generate 5 tasks with 1 false positive than miss 1 real vulnerability
+- Include EXACT payloads in description (not just "test for X")
 
 STEP 4 - CONNECT: Find EXPLOITABLE relationships (THIS IS CRITICAL)
   Good exploitable connections:

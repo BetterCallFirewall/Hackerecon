@@ -41,6 +41,7 @@ type Observation struct {
 	What        string    `json:"what" jsonschema:"description=EXACT fact observed (no interpretation),required"`
 	Where       string    `json:"where" jsonschema:"description=Precise location with value,required"`
 	Why         string    `json:"why" jsonschema:"description=Why this fact is useful for understanding/attacking,required"`
+	Type        string    `json:"type,omitempty" jsonschema:"description=Observation type classification (MongoDB ObjectID, JWT Token, Integer ID, UUID, etc.)"`
 	Hint        string    `json:"hint,omitempty" jsonschema:"description=Actionable guidance from Strategist"`
 	CreatedAt   time.Time `json:"created_at,omitempty" jsonschema:"description=Auto-populated Unix timestamp when observation was created"`
 }

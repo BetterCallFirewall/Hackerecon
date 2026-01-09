@@ -50,6 +50,53 @@ HIGH PRIORITY - Logical Vulnerabilities:
 9. Injection in URL Path: URL segments that look like IDs (UUID, Mongo ObjectID) or JSON keys.
    CRITICAL: If backend is likely NodeJS/MongoDB, URL params might be passed directly to DB queries.
 
+=== INTERESTING DATA TYPES (ALWAYS REPORT - MANDATORY) ===
+
+CRITICAL: Data Type Fingerprinting (MANDATORY):
+
+You MUST ALWAYS identify and tag data formats, even if they don't seem exploitable.
+This is NOT about finding bugs - this is about mapping the attack surface.
+
+1. ID Formats in URL/Parameters (MANDATORY CLASSIFICATION):
+   • 24-char hex (^[a-f0-9]{24}$) → Type: "MongoDB ObjectID"
+   • 36-char UUID (550e8400-e29b-41d4-a716-446655440000) → Type: "UUID"
+   • Integer ID (/api/users/123) → Type: "Integer ID"
+   • JWT (eyJ...) → Type: "JWT Token"
+
+   RULE: If you see an ID, you MUST classify its type.
+   DO NOT skip ID observations just because they don't look exploitable.
+
+2. Authentication Tokens:
+   • Bearer tokens, session cookies, OAuth tokens
+   • JWT structure analysis (header.payload.signature)
+
+3. Response Field Names (reveal database type):
+   • "_id" field → MongoDB
+   • "id" field → SQL
+   • "file_id", "user_id" → Data flow indicators
+
+OUTPUT EXAMPLES (Mandatory Data Types):
+{
+  "what": "MongoDB ObjectID format in URL path parameter",
+  "where": "URL segment: 507f191e810c19729de860ea in GET /users/507f191e810c19729de860ea",
+  "why": "24-char hex format (^[a-f0-9]{24}$) strongly indicates MongoDB ObjectID - critical for NoSQLi testing",
+  "type": "MongoDB ObjectID"
+}
+
+{
+  "what": "JWT token in Authorization header",
+  "where": "Header: Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "why": "JWT structure (header.payload.signature) detected - test for alg=none, weak secrets",
+  "type": "JWT Token"
+}
+
+{
+  "what": "Integer ID in URL parameter",
+  "where": "URL: /api/users/12347",
+  "why": "Sequential integer ID suggests SQL auto-increment - test for IDOR (12346, 12348)",
+  "type": "Integer ID"
+}
+
 === DATA FLOW PATTERNS (HELPFUL FOR ARCHITECT) ===
 
 Technical Signs (helps identify tech stack and data flows):
@@ -140,11 +187,12 @@ BAD OBSERVATIONS (should be ignored):
 ❌ "404 Not Found for /admin" - expected, not interesting
 
 === INSTRUCTIONS ===
-1. Extract 3-5 most exploitable facts
-2. Each observation must indicate potential exploit path
-3. Local context only (this single exchange)
-4. Be specific: exact header names, parameter values, endpoints
-5. If nothing exploitable, return empty observations array
+1. Extract 3-5 most exploitable facts AND architectural indicators
+2. Each observation must indicate potential exploit path OR technology stack clue
+3. ALWAYS classify ID parameter types (MongoDB ObjectID, UUID, Integer ID, JWT) - see INTERESTING DATA TYPES section
+4. Local context only (this single exchange)
+5. Be specific: exact header names, parameter values, endpoints
+6. If nothing exploitable, STILL report architectural metadata (ID formats, tech indicators)
 
 == CRITICAL OUTPUT RULES ==
 
@@ -163,7 +211,8 @@ Return JSON:
     {
       "what": "specific, actionable finding",
       "where": "precise location with actual values",
-      "why": "clear exploit path or impact"
+      "why": "clear exploit path or impact",
+      "type": "observation type (MongoDB ObjectID, JWT Token, Integer ID, UUID, etc.)"
     }
   ]
 }`,

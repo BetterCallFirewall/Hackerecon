@@ -32,14 +32,24 @@ You must deduce the TECHNOLOGY STACK and map DATA FLOW CHAINS by connecting obse
 
 EXTRACT THIS INFO from observations even if they mention security - the data is still valid for architecture!
 
-STEP 1 - IDENTIFY TECH STACK:
+STEP 1 - FINGERPRINT TECHNOLOGY STACK (EXPLICIT INFERENCE):
 
-Look for these PATTERNS in observations:
+Your goal is to DEDUCE backend logic from parameter formats with EXPLICIT justification.
+
+RULES:
+• IF input is Integer ID → Likely SQL database (auto-increment)
+• IF input is 24-char Hex → Likely MongoDB (ObjectID)
+• IF input is JWT → Likely stateless authentication / microservices
+• IF input is UUID → Likely PostgreSQL/UUID field
+
+REQUIREMENT: Justify your inferences with SPECIFIC indicators:
+❌ BAD: "MongoDB, Node.js/Express, Auth via JWT"
+✅ GOOD: "MongoDB (inferred from 24-char hex ObjectIDs in /api/files/:id, /api/users/:id), Node.js/Express (inferred from connect.sid cookie in 8/10 requests), Auth via JWT (inferred from Bearer tokens in Authorization headers)"
 
 Database Indicators:
-• "24-char hex string" (e.g., 507f1f77bcf86cd799439011) → MongoDB ObjectID
-• "36-char UUID" (e.g., 550e8400-e29b-41d4-a716-446655440000) → PostgreSQL/UUID
-• "Integer IDs" (e.g., /user/123, /shop/456) → SQL auto-increment
+• "24-char hex string" + Type="MongoDB ObjectID" → MongoDB
+• "36-char UUID" + Type="UUID" → PostgreSQL with UUID field
+• Integer IDs + Type="Integer ID" → SQL auto-increment
 • Error messages: "MongoError", "PostgreSQL", "mysql_fetch"
 • Response keys: "_id" → MongoDB, "id" → SQL
 
@@ -51,12 +61,13 @@ Backend Indicators:
 • Server headers, error formats
 
 Auth Indicators:
-• "Bearer" header → JWT
+• "Bearer" header + Type="JWT Token" → JWT
 • "session", "sess:" cookie → Session-based
 • "OAuth", "Bearer" + refresh token → OAuth
 
-Output TechStack as: "Database, Backend/Framework, Auth method"
-Example: "MongoDB, Node.js/Express, Auth via JWT"
+Output TechStack format:
+"Database (justification), Backend/Framework (justification), Auth method (justification)"
+Example: "MongoDB (from ObjectID patterns in 10 routes), Node.js/Express (from connect.sid), JWT (from Bearer tokens)"
 
 STEP 2 - MAP DATA FLOW CHAINS:
 
@@ -93,24 +104,28 @@ Look for CONNECTIONS between routes:
 
 FOR EACH CHAIN:
 - Route: "METHOD path1 --> METHOD path2 --> ..."
-- InferredLogic: Describe what happens at each step
+- InferredLogic: Describe what happens at each step WITH technology implications
   - Where does data come FROM? (user input, database, external API)
   - How is it TRANSFORMED? (validation, storage, processing)
   - Where does it GO TO? (database, file system, client response)
+  - What TECHNOLOGY is involved? (MongoDB find(), SQL SELECT, JWT verification)
+
+  ❌ BAD: "User requests file via file_id"
+  ✅ GOOD: "User requests file via file_id (MongoDB ObjectID). The ID format suggests NoSQL document retrieval by ObjectID via MongoDB find() query."
 
 EXAMPLE CHAINS:
 
-GOOD CHAIN 1 (File Upload):
+GOOD CHAIN 1 (File Upload - MongoDB):
 Route: "POST /api/upload --> GET /api/files/:id --> DELETE /api/files/:id"
-InferredLogic: "User uploads file via POST → Server saves to MongoDB/GridFS with generated ObjectID → Server returns ID in response → Client retrieves file via GET /api/files/:id → Client can delete via DELETE /api/files/:id"
+InferredLogic: "User uploads file via POST → Server saves to MongoDB/GridFS with generated ObjectID (24-char hex) → Server returns ObjectID in response → Client retrieves file via GET /api/files/:id (MongoDB find() by ObjectID) → Client can delete via DELETE /api/files/:id. Attack surface: NoSQLi if :id parameter passed directly to MongoDB query."
 
-GOOD CHAIN 2 (User Management):
+GOOD CHAIN 2 (User Management - SQL):
 Route: "POST /api/users --> POST /api/login --> GET /api/users/:id --> PUT /api/users/:id"
-InferredLogic: "User registration via POST /api/users → User login via POST /api/login → Server returns JWT token → Client accesses profile via GET /api/users/:id using token → Client updates profile via PUT /api/users/:id"
+InferredLogic: "User registration via POST /api/users → User login via POST /api/login → Server returns JWT token → Client accesses profile via GET /api/users/:id using integer ID → SQL SELECT by primary key → Client updates profile via PUT /api/users/:id. Attack surface: IDOR if :id not validated, SQLi if integer parameter concatenated into SQL query."
 
 GOOD CHAIN 3 (Shop Flow):
 Route: "POST /api/shop/ --> GET /api/shop/:id --> POST /api/shop/:id/buy"
-InferredLogic: "User creates shop item via POST /api/shop/ → Server stores item with MongoDB ObjectID → User views item via GET /api/shop/:id → User purchases item via POST /api/shop/:id/buy"
+InferredLogic: "User creates shop item via POST /api/shop/ → Server stores item with MongoDB ObjectID (24-char hex) → User views item via GET /api/shop/:id (MongoDB find() by ObjectID) → User purchases item via POST /api/shop/:id/buy. Attack surface: NoSQLi in :id parameter, price manipulation if item data not validated on server."
 
 STEP 3 - BUILD OUTPUT:
 
@@ -132,7 +147,8 @@ Return ONLY this JSON structure:
 1. Be SPECIFIC about tech stack - no "maybe", "could be"
 2. Map 1-3 MOST INTERESTING data flow chains
 3. Each chain must show 2+ routes connected by data flow
-4. InferredLogic MUST describe ONLY the data journey (source → transformation → destination), NOT vulnerabilities or attack surface
+4. InferredLogic MUST describe the data journey WITH technology-specific behavior (MongoDB find(), SQL SELECT)
+   - Include brief attack surface mention at the end (see examples)
 5. Use "-->" to connect routes in the chain
 
 == CRITICAL OUTPUT RULES ==
