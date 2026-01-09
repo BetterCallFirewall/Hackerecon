@@ -598,33 +598,85 @@ func analyzeURL(url string) string {
 }
 
 // FormatSiteMap formats site map entries as a bulleted list with heuristic analysis
-// Adds tags for query parameters, JSON bodies, JSON in URLs, and MongoDB ObjectIDs
+// NOTE: Updated for new architecture - no longer has direct access to Request/Response
+// Uses TrafficDigest if available, otherwise falls back to URL-based analysis only
 func FormatSiteMap(entries []models.SiteMapEntry) string {
 	result := ""
 	for _, e := range entries {
-		// Get summary tags from request analysis
-		summaryTags := summarizeRequest(e.Request)
+		var tags []string
 
-		// Get URL analysis tags
-		urlTags := analyzeURL(e.URL)
-
-		// Combine all tags
-		allTags := summaryTags
-		if urlTags != "" {
-			if allTags != "" {
-				allTags += " "
+		// If TrafficDigest is available, use its architectural info
+		if e.Digest != nil {
+			// Add route signature if available
+			if e.Digest.RouteSignature != "" {
+				tags = append(tags, fmt.Sprintf("[%s]", e.Digest.RouteSignature))
 			}
-			allTags += urlTags
+			// Add tech stack hints
+			if len(e.Digest.TechStackHints) > 0 {
+				tags = append(tags, fmt.Sprintf("[%s]", strings.Join(e.Digest.TechStackHints, ", ")))
+			}
+		}
+
+		// Fall back to URL-based heuristics if no digest
+		urlTags := analyzeURL(e.URL)
+		if urlTags != "" {
+			tags = append(tags, urlTags)
 		}
 
 		// Format the entry
 		entry := fmt.Sprintf("- ID: %s | %s %s", e.ExchangeID, e.Method, e.URL)
-		if allTags != "" {
-			entry += fmt.Sprintf(" %s", allTags)
+		if len(tags) > 0 {
+			entry += fmt.Sprintf(" %s", strings.Join(tags, " "))
 		}
 		entry += "\n"
 
 		result += entry
 	}
 	return result
+}
+
+// FormatDigestsForArchitect turns TrafficDigest array into formatted text for Architect
+// Formats traffic analysis data with route signatures, logic summaries, and I/O types
+func FormatDigestsForArchitect(digests []models.TrafficDigest) string {
+	var sb strings.Builder
+
+	sb.WriteString("=== TRAFFIC ANALYSIS LOG (Data Flow & Types) ===\n\n")
+
+	for i, digest := range digests {
+		// Header: [1] GET /api/users/{id}
+		sb.WriteString(fmt.Sprintf("[%d] %s\n", i+1, digest.RouteSignature))
+
+		// Summary
+		sb.WriteString(fmt.Sprintf("    Logic: %s\n", digest.Summary))
+
+		// Inputs (with types)
+		if len(digest.Inputs) > 0 {
+			sb.WriteString("    In:  ")
+			var ins []string
+			for _, in := range digest.Inputs {
+				// Example: id (mongo_object_id)
+				ins = append(ins, fmt.Sprintf("%s (%s)", in.Name, in.DataType))
+			}
+			sb.WriteString(strings.Join(ins, ", ") + "\n")
+		}
+
+		// Outputs (with types)
+		if len(digest.Outputs) > 0 {
+			sb.WriteString("    Out: ")
+			var outs []string
+			for _, out := range digest.Outputs {
+				outs = append(outs, fmt.Sprintf("%s (%s)", out.Name, out.DataType))
+			}
+			sb.WriteString(strings.Join(outs, ", ") + "\n")
+		}
+
+		// Tech stack
+		if len(digest.TechStackHints) > 0 {
+			sb.WriteString(fmt.Sprintf("    Tech: %s\n", strings.Join(digest.TechStackHints, ", ")))
+		}
+
+		sb.WriteString("\n")
+	}
+
+	return sb.String()
 }

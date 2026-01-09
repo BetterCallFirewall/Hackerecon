@@ -18,7 +18,8 @@ type AnalystRequest struct {
 
 // AnalystResponse - output from Analyst flow
 type AnalystResponse struct {
-	Observations []models.Observation `json:"observations"`
+	Observations  []models.Observation  `json:"observations"`
+	TrafficDigest *models.TrafficDigest `json:"traffic_digest,omitempty"`
 }
 
 // DefineAnalystFlow creates the Analyst Genkit flow
@@ -55,7 +56,7 @@ func DefineAnalystFlow(
 				return nil, fmt.Errorf("analyst LLM failed: %w", err)
 			}
 
-			log.Printf("✅ Analyst complete: %d raw observations", len(result.Observations))
+			log.Printf("✅ Analyst complete: %d raw observations, digest=%v", len(result.Observations), result.TrafficDigest != nil)
 			return result, nil
 		},
 	)

@@ -23,8 +23,9 @@ type AnalystDTO struct {
 	Method       string               `json:"method"`
 	URL          string               `json:"url"`
 	StatusCode   int                  `json:"status_code"`
-	Exchange     models.HTTPExchange  `json:"exchange"`     // FULL exchange
-	Observations []models.Observation `json:"observations"` // Raw observations
+	Exchange     models.HTTPExchange  `json:"exchange"`       // FULL exchange
+	Observations []models.Observation `json:"observations"`   // Raw observations
+	TrafficDigest *models.TrafficDigest `json:"traffic_digest,omitempty"` // Architectural summary
 }
 
 // DeepAnalysisDTO - result from Strategist + Tactician

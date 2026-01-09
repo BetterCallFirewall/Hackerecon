@@ -530,3 +530,17 @@ func (g *InMemoryGraph) GetAndClearRawBuffer() []Observation {
 
 	return result
 }
+
+// UpdateSiteMapDigest adds TrafficDigest to an existing SiteMapEntry
+func (g *InMemoryGraph) UpdateSiteMapDigest(exchangeID string, digest *TrafficDigest) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	for _, entry := range g.siteMap {
+		if entry.ExchangeID == exchangeID {
+			entry.Digest = digest
+			return nil
+		}
+	}
+	return fmt.Errorf("site map entry not found: %s", exchangeID)
+}
