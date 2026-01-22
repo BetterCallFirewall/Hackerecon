@@ -4,465 +4,443 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"net/http"
-	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/BetterCallFirewall/Hackerecon/internal/llm"
 	"github.com/BetterCallFirewall/Hackerecon/internal/models"
-	"github.com/BetterCallFirewall/Hackerecon/internal/utils"
 	"github.com/BetterCallFirewall/Hackerecon/internal/websocket"
-	"github.com/PuerkitoBio/goquery"
 	genkitcore "github.com/firebase/genkit/go/core"
 	"github.com/firebase/genkit/go/genkit"
-	"github.com/google/uuid"
+	"golang.org/x/sync/errgroup"
 )
 
-// GenkitSecurityAnalyzer анализирует HTTP трафик на наличие уязвимостей безопасности
-// используя LLM модели через кастомный провайдер. Поддерживает двухэтапный анализ с кэшированием
-// и автоматическую генерацию гипотез об уязвимостях.
+// GenkitSecurityAnalyzer implements the new 4-phase agent flow
+// Analyst → Architect → Strategist → Tactician
 type GenkitSecurityAnalyzer struct {
-	// Core components
-	llmProvider llm.Provider
-	WsHub       *websocket.WebsocketManager
-	genkitApp   *genkit.Genkit
+	// Individual agent flows (replaces detectiveAIFlow)
+	analystFlow    *genkitcore.Flow[*llm.AnalystRequest, *llm.AnalystResponse, struct{}]
+	architectFlow  *genkitcore.Flow[*llm.ArchitectRequest, *llm.ArchitectResult, struct{}]
+	strategistFlow *genkitcore.Flow[*llm.StrategistRequest, *llm.StrategistResult, struct{}]
+	tacticianFlow  *genkitcore.Flow[*llm.TacticianRequest, *llm.TacticianResult, struct{}]
 
-	// Analysis flows
-	analysisFlow    *genkitcore.Flow[*models.SecurityAnalysisRequest, *models.SecurityAnalysisResponse, struct{}]
-	urlAnalysisFlow *genkitcore.Flow[*models.URLAnalysisRequest, *models.URLAnalysisResponse, struct{}]
+	// Storage
+	graph *models.InMemoryGraph
 
-	// Modular components
-	cache          *AnalysisCache
-	contextManager *SiteContextManager
-	dataExtractor  *DataExtractor
-	hypothesisGen  *HypothesisGenerator
-	urlNormalizer  *utils.ContextAwareNormalizer
-	requestFilter  *utils.RequestFilter
+	// WebSocket
+	wsHub *websocket.WebsocketManager
 }
 
-// NewGenkitSecurityAnalyzer создаёт анализатор с кастомным LLM провайдером
+// NewGenkitSecurityAnalyzer creates a new analyzer with the 4-phase agent flow
 func NewGenkitSecurityAnalyzer(
 	genkitApp *genkit.Genkit,
-	provider llm.Provider,
+	modelNameFast string,
+	modelNameSmart string,
 	wsHub *websocket.WebsocketManager,
-) (*GenkitSecurityAnalyzer, error) {
-	analyzer := &GenkitSecurityAnalyzer{
-		llmProvider: provider,
-		WsHub:       wsHub,
-		genkitApp:   genkitApp,
+) *GenkitSecurityAnalyzer {
+	// Define tools FIRST
+	llm.DefineGetExchangeTool(genkitApp)
 
-		// Инициализация компонентов
-		contextManager: NewSiteContextManager(),
-		urlNormalizer:  utils.NewContextAwareNormalizer(),
-		requestFilter:  utils.NewRequestFilter(),
-		cache:          NewAnalysisCache(),
-	}
+	// Create agent flows with different models
+	analystFlow := llm.DefineAnalystFlow(genkitApp, modelNameFast)
+	architectFlow := llm.DefineArchitectFlow(genkitApp, modelNameSmart)
+	strategistFlow := llm.DefineStrategistFlow(genkitApp, modelNameSmart)
+	tacticianFlow := llm.DefineTacticianFlow(genkitApp, modelNameSmart)
 
-	// Инициализация data extractor с паттернами секретов
-	secretPatterns := createSecretRegexPatterns()
-	analyzer.dataExtractor = NewDataExtractor(secretPatterns)
+	// Create in-memory graph
+	graph := models.NewInMemoryGraph()
+	models.SetGlobalInMemoryGraph(graph)
+	log.Printf("✅ Global InMemoryGraph reference set for tool access")
 
-	// Определяем flow для полного анализа безопасности
-	analyzer.analysisFlow = genkit.DefineFlow(
-		genkitApp, "securityAnalysisFlow",
-		func(ctx context.Context, req *models.SecurityAnalysisRequest) (*models.SecurityAnalysisResponse, error) {
-			return analyzer.performSecurityAnalysis(ctx, req)
-		},
-	)
-
-	// Определяем flow для быстрой оценки URL
-	analyzer.urlAnalysisFlow = genkit.DefineFlow(
-		genkitApp, "urlAnalysisFlow",
-		func(ctx context.Context, req *models.URLAnalysisRequest) (*models.URLAnalysisResponse, error) {
-			return analyzer.performURLAnalysis(ctx, req)
-		},
-	)
-
-	// Определяем flow для генерации гипотез
-	hypothesisFlow := genkit.DefineFlow(
-		genkitApp, "hypothesisFlow",
-		func(ctx context.Context, req *models.HypothesisRequest) (*models.HypothesisResponse, error) {
-			return analyzer.performHypothesisGeneration(ctx, req)
-		},
-	)
-
-	// Инициализация генератора гипотез
-	analyzer.hypothesisGen = NewHypothesisGenerator(
-		hypothesisFlow,
-		wsHub,
-		analyzer.contextManager,
-	)
-
-	return analyzer, nil
-}
-
-// performSecurityAnalysis выполняет анализ безопасности с помощью провайдера
-func (analyzer *GenkitSecurityAnalyzer) performSecurityAnalysis(
-	ctx context.Context, req *models.SecurityAnalysisRequest,
-) (*models.SecurityAnalysisResponse, error) {
-	result, err := analyzer.llmProvider.GenerateSecurityAnalysis(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate security analysis: %w", err)
-	}
-
-	// Финализируем результат
-	analyzer.finalizeAnalysisResult(result, req)
-
-	return result, nil
-}
-
-// finalizeAnalysisResult финализирует результат анализа безопасности
-func (analyzer *GenkitSecurityAnalyzer) finalizeAnalysisResult(
-	result *models.SecurityAnalysisResponse,
-	req *models.SecurityAnalysisRequest,
-) {
-	result.Timestamp = time.Now()
-	analyzer.normalizeAndValidateRiskLevel(result)
-	analyzer.appendExtractedSecrets(result, req)
-}
-
-// normalizeAndValidateRiskLevel нормализует и валидирует уровень риска
-func (analyzer *GenkitSecurityAnalyzer) normalizeAndValidateRiskLevel(result *models.SecurityAnalysisResponse) {
-	result.RiskLevel = strings.ToLower(strings.TrimSpace(result.RiskLevel))
-
-	validRiskLevels := map[string]bool{
-		"low":      true,
-		"medium":   true,
-		"high":     true,
-		"critical": true,
-	}
-
-	if !validRiskLevels[result.RiskLevel] {
-		log.Printf("⚠️ Невалидный risk_level '%s', устанавливаем 'low'", result.RiskLevel)
-		result.RiskLevel = "low"
+	return &GenkitSecurityAnalyzer{
+		analystFlow:    analystFlow,
+		architectFlow:  architectFlow,
+		strategistFlow: strategistFlow,
+		tacticianFlow:  tacticianFlow,
+		graph:          graph,
+		wsHub:          wsHub,
 	}
 }
 
-// appendExtractedSecrets добавляет извлеченные секреты к результату
-func (analyzer *GenkitSecurityAnalyzer) appendExtractedSecrets(
-	result *models.SecurityAnalysisResponse,
-	req *models.SecurityAnalysisRequest,
-) {
-	result.ExtractedSecrets = append(result.ExtractedSecrets, req.ExtractedData.APIKeys...)
-	result.ExtractedSecrets = append(result.ExtractedSecrets, req.ExtractedData.Secrets...)
-}
-
-// AnalyzeHTTPTraffic оптимизированный анализ HTTP трафика с двухэтапной проверкой
-func (analyzer *GenkitSecurityAnalyzer) AnalyzeHTTPTraffic(
-	ctx context.Context, req *http.Request, resp *http.Response, reqBody, respBody, contentType string,
+// AnalyzeHTTPTraffic analyzes HTTP traffic using the analyst flow (Phase 1)
+// This is the MAIN entry point - processes each request through Analyst only
+func (a *GenkitSecurityAnalyzer) AnalyzeHTTPTraffic(
+	ctx context.Context,
+	method, url string,
+	reqHeaders, respHeaders map[string]string,
+	reqBody, respBody string,
+	statusCode int,
 ) error {
-	// 1. Умная фильтрация запросов
-	shouldSkip, reason := analyzer.requestFilter.ShouldSkipRequestWithReason(req, resp, contentType)
-	if shouldSkip {
-		log.Printf("⚪️ Пропуск анализа %s %s: %s", req.Method, req.URL.String(), reason)
-		return nil // Пропускаем анализ
-	}
-
-	log.Printf("🔍 Анализ запроса: %s %s (Content-Type: %s)", req.Method, req.URL.String(), contentType)
-
-	// 2. Получаем/создаем контекст сайта
-	siteContext := analyzer.getOrCreateSiteContext(req.URL.Host)
-
-	// 3. Нормализация URL
-	normalizedURL := analyzer.urlNormalizer.NormalizeWithContext(req.URL.String())
-	cacheKey := fmt.Sprintf("%s:%s", req.Method, normalizedURL)
-
-	// 5. Проверка кэша
-	if shouldSkipBasedOnCache := analyzer.checkCacheAndDecide(cacheKey); shouldSkipBasedOnCache {
+	// STEP 1: Request Filter (heuristic, NO LLM)
+	skipReason := a.shouldSkipRequest(method, url, statusCode, respHeaders, respBody)
+	if skipReason != "" {
+		log.Printf("⚪ Skipping %s %s: %s", method, url, skipReason)
 		return nil
 	}
 
-	// 6. Двухэтапный анализ
-
-	// Этап 1: Быстрая оценка значимости URL
-	urlAnalysisReq := &models.URLAnalysisRequest{
-		NormalizedURL: normalizedURL,
-		Method:        req.Method,
-		Headers:       convertHeaders(req.Header),
-		ResponseBody:  analyzer.prepareContentForLLM(respBody, contentType),
-		ContentType:   contentType,
-		SiteContext:   siteContext,
+	// STEP 2: Store exchange
+	exchange := models.HTTPExchange{
+		Request: models.RequestPart{
+			Method:  method,
+			URL:     url,
+			Headers: reqHeaders,
+			Body:    reqBody,
+		},
+		Response: models.ResponsePart{
+			StatusCode: statusCode,
+			Headers:    respHeaders,
+			Body:       respBody,
+		},
+		Timestamp: time.Now(),
 	}
+	exchangeID := a.graph.StoreExchange(&exchange)
 
-	// Запускаем быстрый анализ
-	urlAnalysisResp, err := analyzer.urlAnalysisFlow.Run(ctx, urlAnalysisReq)
+	log.Printf("🔍 Analyzing %s %s", method, url)
+	log.Printf("💾 Stored exchange %s", exchangeID)
+
+	// STEP 3: Store in site map
+	_ = a.storeInSiteMap(
+		method, url, exchangeID,
+		reqHeaders, respHeaders,
+		reqBody, respBody,
+		statusCode,
+		"",
+	)
+
+	// STEP 4: Prepare exchange for LLM (truncated)
+	exchangeForLLM := a.prepareExchangeForLLM(exchange)
+
+	// STEP 5: AnalystFlow (Phase 1 only)
+	analystResult, err := a.analystFlow.Run(
+		ctx, &llm.AnalystRequest{
+			Exchange: exchangeForLLM,
+		},
+	)
 	if err != nil {
-		log.Printf("❌ Failed quick URL analysis: %v", err)
-		return err
+		log.Printf("⚠️ Analyst failed for %s: %v", url, err)
+		// Don't block - continue with empty observations
+		analystResult = &llm.AnalystResponse{Observations: []models.Observation{}}
 	}
 
-	// 7. Кэшируем результат быстрой оценки
-	analyzer.cacheAnalysis(cacheKey, urlAnalysisResp)
-
-	// 8. Обновляем паттерн URL с заметками от LLM (если контекст существует)
-	if siteContext != nil {
-		analyzer.updateURLPattern(siteContext, normalizedURL, req.Method, urlAnalysisResp.URLNote)
+	// STEP 6: Store raw observations
+	for i := range analystResult.Observations {
+		analystResult.Observations[i].ExchangeIDs = []string{exchangeID}
+		obsID := a.graph.AddRawObservation(&analystResult.Observations[i])
+		log.Printf("💡 Raw observation %s: %s", obsID, analystResult.Observations[i].What)
 	}
 
-	// 9. Полный анализ только если нужно
-	if urlAnalysisResp.ShouldAnalyze {
-		log.Printf(
-			"🔬 Требуется полный анализ для %s (приоритет: %s, подозрительность: %v)",
-			cacheKey, urlAnalysisResp.Priority, urlAnalysisResp.URLNote.Suspicious,
-		)
-
-		err := analyzer.fullSecurityAnalysis(
-			ctx, req, resp, reqBody, respBody, contentType, siteContext, urlAnalysisResp.URLNote,
-		)
-		if err != nil {
-			log.Printf("❌ Failed full security analysis: %v", err)
-			return err
+	// STEP 6.5: Store TrafficDigest in SiteMap
+	if analystResult.TrafficDigest != nil {
+		// Validate required fields
+		if analystResult.TrafficDigest.RouteSignature == "" {
+			log.Printf("⚠️ TrafficDigest missing RouteSignature, skipping storage")
+		} else if err := a.graph.UpdateSiteMapDigest(exchangeID, analystResult.TrafficDigest); err != nil {
+			log.Printf("⚠️ Failed to update SiteMap with digest: %v", err)
+		} else {
+			log.Printf("📋 Stored TrafficDigest for %s", exchangeID)
 		}
+	}
 
+	// STEP 7: WebSocket with FULL exchange (not truncated)
+	a.wsHub.Broadcast(
+		websocket.AnalystDTO{
+			ExchangeID:    exchangeID,
+			Method:        method,
+			URL:           url,
+			StatusCode:    statusCode,
+			Exchange:      exchange, // FULL exchange, not exchangeForLLM
+			Observations:  analystResult.Observations,
+			TrafficDigest: analystResult.TrafficDigest,
+		},
+	)
+
+	log.Printf("✅ Analyst complete for %s %s", method, url)
+	return nil
+}
+
+// RunDeepAnalysis runs the Architect, Strategist and Tactician phases (Phases 2-4)
+// This is called separately (not per-request) to aggregate and analyze raw observations
+func (a *GenkitSecurityAnalyzer) RunDeepAnalysis(ctx context.Context) error {
+	log.Printf("🚀 Starting deep analysis")
+
+	// STEP 1: Get and clear raw buffer atomically
+	rawBuffer := a.graph.GetAndClearRawBuffer()
+	if len(rawBuffer) == 0 {
+		log.Printf("⚠️ No raw observations to analyze")
 		return nil
+	}
+	log.Printf("📊 Processing %d raw observations", len(rawBuffer))
+
+	// STEP 2: Architect (reconstruct system architecture and data flows)
+	siteMapEntries := a.graph.GetAllSiteMapEntries()
+	architectResult, err := a.architectFlow.Run(
+		ctx, &llm.ArchitectRequest{
+			RawObservations: rawBuffer,
+			SiteMap:         convertSiteMapEntries(siteMapEntries),
+		},
+	)
+	if err != nil {
+		// Restore raw buffer on failure
+		for i := range rawBuffer {
+			a.graph.AddRawObservation(&rawBuffer[i])
+		}
+		log.Printf("⚠️ Architect failed, restored %d raw observations to buffer", len(rawBuffer))
+		return fmt.Errorf("architect failed: %w", err)
 	}
 
 	log.Printf(
-		"✅ Быстрый анализ завершен для %s: %s (confidence: %.2f, приоритет: %s)",
-		cacheKey, urlAnalysisResp.URLNote.Content, urlAnalysisResp.URLNote.Confidence, urlAnalysisResp.Priority,
+		"🏗️  System Architecture: %s, %d data flows",
+		architectResult.SystemArchitecture.TechStack,
+		len(architectResult.SystemArchitecture.DataFlows),
 	)
 
-	return nil
-}
-
-// fullSecurityAnalysis выполняет полный анализ безопасности
-func (analyzer *GenkitSecurityAnalyzer) fullSecurityAnalysis(
-	ctx context.Context,
-	req *http.Request,
-	resp *http.Response,
-	reqBody, respBody, contentType string,
-	siteContext *models.SiteContext,
-	urlNote *models.URLNote,
-) error {
-	// Ленивое извлечение данных - только для HTML/JS контента
-	var extractedData *models.ExtractedData
-	if analyzer.shouldExtractData(contentType, respBody) {
-		extractedData = analyzer.extractDataFromContent(reqBody, respBody, contentType)
-	} else {
-		// Пустые данные для non-HTML/JS контента
-		extractedData = &models.ExtractedData{
-			URLs:          []string{},
-			APIKeys:       []models.ExtractedSecret{},
-			Secrets:       []models.ExtractedSecret{},
-			JSFunctions:   []models.JSFunction{},
-			FormActions:   []string{},
-			Comments:      []string{},
-			ExternalHosts: []string{},
-		}
-	}
-
-	preparedRequestBody := analyzer.prepareContentForLLM(reqBody, req.Header.Get("Content-Type"))
-	preparedResponseBody := analyzer.prepareContentForLLM(respBody, contentType)
-
-	// Подготавливаем запрос для полного анализа
-	analysisReq := &models.SecurityAnalysisRequest{
-		URL:           req.URL.String(),
-		Method:        req.Method,
-		Headers:       convertHeaders(req.Header),
-		RequestBody:   preparedRequestBody,
-		ResponseBody:  preparedResponseBody,
-		ContentType:   contentType,
-		ExtractedData: *extractedData,
-		SiteContext:   siteContext,
-	}
-
-	// Выполняем анализ через flow
-	result, err := analyzer.analysisFlow.Run(ctx, analysisReq)
-	if err != nil {
-		return fmt.Errorf("full security analysis failed: %w", err)
-	}
-
-	// Отправляем результат в WebSocket
-	analyzer.broadcastAnalysisResult(req, resp, result, reqBody, respBody)
-
-	return nil
-}
-
-// broadcastAnalysisResult отправляет результат анализа в WebSocket
-func (analyzer *GenkitSecurityAnalyzer) broadcastAnalysisResult(
-	req *http.Request,
-	resp *http.Response,
-	result *models.SecurityAnalysisResponse,
-	reqBody, respBody string,
-) {
-	// Логируем критические находки
-	if result.HasVulnerability && (result.RiskLevel == "high" || result.RiskLevel == "critical") {
-		log.Printf("🚨 КРИТИЧЕСКАЯ УЯЗВИМОСТЬ: %s - Risk: %s", req.URL.String(), result.RiskLevel)
-		log.Printf("💡 AI Комментарий: %s", result.AIComment)
-	}
-
-	// Отправляем результат в WebSocket
-	analyzer.WsHub.Broadcast(
-		models.ReportDTO{
-			Report: models.VulnerabilityReport{
-				ID:             uuid.New().String(),
-				Timestamp:      time.Now(),
-				AnalysisResult: *result,
-			},
-			RequestResponse: models.RequestResponseInfo{
-				URL:         req.URL.String(),
-				Method:      req.Method,
-				StatusCode:  resp.StatusCode,
-				ReqHeaders:  convertHeaders(req.Header),
-				RespHeaders: convertHeaders(resp.Header),
-				ReqBody:     llm.TruncateString(reqBody, maxContentSizeForLLM),
-				RespBody:    llm.TruncateString(respBody, maxContentSizeForLLM),
-			},
+	// STEP 3: Strategist (with SystemArchitecture from Architect)
+	strategistResult, err := a.strategistFlow.Run(
+		ctx, &llm.StrategistRequest{
+			RawObservations:    rawBuffer,
+			SiteMap:            convertSiteMapEntries(siteMapEntries),
+			BigPicture:         a.graph.GetBigPicture(),
+			SystemArchitecture: &architectResult.SystemArchitecture,
 		},
 	)
-}
-
-// getOrCreateSiteContext получает или создает контекст для хоста.
-func (analyzer *GenkitSecurityAnalyzer) getOrCreateSiteContext(host string) *models.SiteContext {
-	return analyzer.contextManager.GetOrCreate(host)
-}
-
-func (analyzer *GenkitSecurityAnalyzer) prepareContentForLLM(content, contentType string) string {
-	if len(content) == 0 {
-		return "empty"
+	if err != nil {
+		// Restore raw buffer on failure
+		for i := range rawBuffer {
+			a.graph.AddRawObservation(&rawBuffer[i])
+		}
+		log.Printf("⚠️ Strategist failed, restored %d raw observations to buffer", len(rawBuffer))
+		return fmt.Errorf("strategist failed: %w", err)
 	}
 
-	// Для HTML извлекаем только текст без тегов и разметки, чтобы модель поняла суть страницы
-	if strings.Contains(contentType, "html") {
-		doc, err := goquery.NewDocumentFromReader(strings.NewReader(content))
-		if err == nil {
-			// Удаляем скрипты и стили, чтобы они не загромождали контекст
-			doc.Find("script, style").Remove()
-			// Возвращаем только текст из body
-			textContent := doc.Find("body").Text()
-			// Заменяем множественные пробелы и переносы строк на один пробел
-			re := regexp.MustCompile(`\s+`)
-			textContent = re.ReplaceAllString(textContent, " ")
-			return llm.TruncateString("HTML Text Content: "+textContent, 2000) // Ограничиваем до 2000 символов
+	// STEP 4: Store aggregated observations
+	for i := range strategistResult.Observations {
+		obsID := a.graph.AddObservation(&strategistResult.Observations[i])
+		log.Printf(
+			"💡 Aggregated observation %s\n  - What: %v\n  - Why: %v", obsID, strategistResult.Observations[i].What,
+			strategistResult.Observations[i].Why,
+		)
+	}
+
+	// STEP 5: Store connections
+	for _, conn := range strategistResult.Connections {
+		a.graph.AddConnection(conn.From, conn.To, conn.Reason)
+		log.Printf("🔗 Connection: %s <-> %s", conn.From, conn.To)
+	}
+
+	// STEP 6: Update BigPicture
+	if strategistResult.BigPictureImpact != nil {
+		if err := a.graph.UpdateBigPictureWithImpact(strategistResult.BigPictureImpact); err != nil {
+			log.Printf("⚠️ Failed to update BigPicture: %v", err)
 		}
 	}
 
-	// Для JavaScript и JSON просто обрезаем, т.к. их структура важна
-	if strings.Contains(contentType, "javascript") || strings.Contains(contentType, "json") {
-		return llm.TruncateString(content, 2000) // Ограничиваем до 2000 символов
+	// STEP 7: Tactician for each task (parallel execution with errgroup)
+	allLeads := []models.Lead{}
+	leadsMu := sync.Mutex{} // For safe appends to allLeads slice
+
+	if len(strategistResult.TacticianTasks) > 0 {
+		log.Printf("🔧 Starting %d tactician tasks in parallel", len(strategistResult.TacticianTasks))
+
+		g, gCtx := errgroup.WithContext(ctx)
+
+		for taskIdx, task := range strategistResult.TacticianTasks {
+			// Capture loop variables for goroutine
+			taskIdx, task := taskIdx, task
+
+			g.Go(func() error {
+				log.Printf("🟡 [Task %d/%d] Tactician analyzing: %s",
+					taskIdx+1, len(strategistResult.TacticianTasks), task.Description)
+
+				tacticianResult, err := a.tacticianFlow.Run(
+					gCtx, &llm.TacticianRequest{
+						Task:       task,
+						BigPicture: a.graph.GetBigPicture(),
+						SiteMap:    convertSiteMapEntries(siteMapEntries),
+						Graph:      a.graph,                             // For getExchange tool
+						SystemArch: &architectResult.SystemArchitecture, // For stack-specific context
+					},
+				)
+				if err != nil {
+					log.Printf("⚠️ [Task %d/%d] Tactician failed: %v",
+						taskIdx+1, len(strategistResult.TacticianTasks), err)
+					// Don't fail entire group - return nil to continue with other tasks
+					return nil
+				}
+
+				// Store leads with mutex protection for allLeads slice
+				leadsMu.Lock()
+				for _, lead := range tacticianResult.Leads {
+					leadID := a.graph.AddLead(&lead)
+					log.Printf("🎯 [Task %d/%d] Lead %s: %s",
+						taskIdx+1, len(strategistResult.TacticianTasks), leadID, lead.Title)
+					allLeads = append(allLeads, lead)
+				}
+				leadsMu.Unlock()
+
+				log.Printf("✅ [Task %d/%d] Complete: %d leads",
+					taskIdx+1, len(strategistResult.TacticianTasks), len(tacticianResult.Leads))
+				return nil
+			})
+		}
+
+		// Wait for all tasks to complete
+		if err := g.Wait(); err != nil {
+			log.Printf("⚠️ Tactician group completed with error: %v", err)
+		}
+
+		log.Printf("✅ All tactician tasks complete: %d leads generated", len(allLeads))
 	}
 
-	// Для всего остального (например, text/plain) тоже обрезаем
-	return llm.TruncateString(content, 1000)
-}
-
-// shouldExtractData проверяет, нужно ли извлекать данные (только для HTML/JS)
-func (analyzer *GenkitSecurityAnalyzer) shouldExtractData(contentType, body string) bool {
-	// Извлекаем только для HTML и JavaScript
-	isHTML := strings.Contains(contentType, "html") || strings.Contains(body, "<html") || strings.Contains(
-		body, "<!DOCTYPE",
+	// STEP 8: WebSocket with final results
+	a.wsHub.Broadcast(
+		websocket.DeepAnalysisDTO{
+			Observations:       strategistResult.Observations,
+			Connections:        strategistResult.Connections,
+			Leads:              allLeads,
+			BigPicture:         a.graph.GetBigPicture(),
+			SystemArchitecture: &architectResult.SystemArchitecture,
+			TacticianTasks:     strategistResult.TacticianTasks,
+			SiteMap:            convertSiteMapEntries(siteMapEntries),
+		},
 	)
-	isJS := strings.Contains(contentType, "javascript") || strings.Contains(contentType, "json")
 
-	return isHTML || isJS
+	log.Printf(
+		"✅ Deep analysis complete: %d obs, %d leads",
+		len(strategistResult.Observations), len(allLeads),
+	)
+	return nil
 }
 
-// extractDataFromContent извлекает данные из HTTP контента
-func (analyzer *GenkitSecurityAnalyzer) extractDataFromContent(reqBody, respBody, contentType string) *models.ExtractedData {
-	return analyzer.dataExtractor.ExtractFromContent(reqBody, respBody, contentType)
-}
-
-// Новые функции для оптимизированного анализа
-
-// performURLAnalysis выполняет быстрый анализ URL
-func (analyzer *GenkitSecurityAnalyzer) performURLAnalysis(
-	ctx context.Context, req *models.URLAnalysisRequest,
-) (*models.URLAnalysisResponse, error) {
-	result, err := analyzer.llmProvider.GenerateURLAnalysis(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate URL analysis: %w", err)
+// shouldSkipRequest checks if a request should be skipped using heuristic filtering
+// Accepts individual parameters to avoid creating HTTPExchange object for filtered requests
+func (a *GenkitSecurityAnalyzer) shouldSkipRequest(method, url string, statusCode int, respHeaders map[string]string,
+	respBody string) string {
+	// Skip static assets
+	if isStaticAsset(url) {
+		return "static asset"
 	}
 
-	// Валидация результата
-	if result.URLNote == nil {
-		result.URLNote = &models.URLNote{
-			Content:    "Analysis completed",
-			Suspicious: false,
-			Confidence: 0.5,
-		}
+	// Skip health checks
+	if isHealthCheck(url) {
+		return "health check"
 	}
 
-	result.URLNote.Timestamp = time.Now()
-
-	return result, nil
-}
-
-// performHypothesisGeneration выполняет генерацию гипотез
-func (analyzer *GenkitSecurityAnalyzer) performHypothesisGeneration(
-	ctx context.Context, req *models.HypothesisRequest,
-) (*models.HypothesisResponse, error) {
-	result, err := analyzer.llmProvider.GenerateHypothesis(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate hypothesis: %w", err)
+	// Skip based on status code
+	if statusCode >= 400 && statusCode < 500 {
+		return fmt.Sprintf("client error %d", statusCode)
 	}
 
-	// Валидация и заполнение дефолтных значений
-	if result.Hypothesis == nil {
-		result.Hypothesis = &models.SecurityHypothesis{
-			ID:          uuid.New().String()[:8],
-			Title:       "No hypothesis generated",
-			Description: "Insufficient data",
-			Confidence:  0.0,
-			CreatedAt:   time.Now(),
-			UpdatedAt:   time.Now(),
-			Status:      models.HypothesisActive,
-		}
-	} else {
-		// Заполняем timestamp если их нет
-		now := time.Now()
-		if result.Hypothesis.CreatedAt.IsZero() {
-			result.Hypothesis.CreatedAt = now
-		}
-		if result.Hypothesis.UpdatedAt.IsZero() {
-			result.Hypothesis.UpdatedAt = now
-		}
-		// Генерируем ID если его нет
-		if result.Hypothesis.ID == "" {
-			result.Hypothesis.ID = uuid.New().String()[:8]
-		}
+	// Skip large responses
+	if len(respBody) > maxResponseSize {
+		return "large response"
 	}
 
-	return result, nil
+	// Skip common non-interesting content types
+	contentType := respHeaders["Content-Type"]
+	if isSkippableContentType(contentType) {
+		return fmt.Sprintf("content-type: %s", contentType)
+	}
+
+	return ""
 }
 
-// Функции для работы с кэшем
-
-// checkCacheAndDecide проверяет кэш и решает, нужно ли пропустить анализ
-func (analyzer *GenkitSecurityAnalyzer) checkCacheAndDecide(cacheKey string) bool {
-	return analyzer.cache.CheckAndDecide(cacheKey)
+// isStaticAsset checks if URL is a static asset
+func isStaticAsset(url string) bool {
+	// Note: .css is EXCLUDED - CSS files can contain sensitive paths/comments
+	staticExtensions := []string{
+		".js", ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg", ".woff", ".woff2", ".ttf", ".eot",
+	}
+	for _, ext := range staticExtensions {
+		if strings.Contains(strings.ToLower(url), ext) {
+			return true
+		}
+	}
+	return false
 }
 
-// cacheAnalysis сохраняет результат анализа в кэш
-func (analyzer *GenkitSecurityAnalyzer) cacheAnalysis(cacheKey string, resp *models.URLAnalysisResponse) {
-	analyzer.cache.Set(cacheKey, resp)
+// isHealthCheck checks if URL is a health check endpoint
+func isHealthCheck(url string) bool {
+	urlLower := strings.ToLower(url)
+	healthPatterns := []string{"/health", "/ping", "/status", "/ready", "/live"}
+	for _, pattern := range healthPatterns {
+		if strings.Contains(urlLower, pattern) {
+			return true
+		}
+	}
+	return false
 }
 
-// Функции для работы с URL паттернами
-
-// updateURLPattern обновляет паттерн URL с новой заметкой
-func (analyzer *GenkitSecurityAnalyzer) updateURLPattern(
-	siteContext *models.SiteContext, normalizedURL, method string, urlNote *models.URLNote,
-) {
-	analyzer.contextManager.UpdateURLPattern(siteContext, normalizedURL, method, urlNote)
+// isSkippableContentType checks if content-type should be skipped
+func isSkippableContentType(contentType string) bool {
+	ct := strings.ToLower(contentType)
+	skippable := []string{"image/", "video/", "audio/", "font/", "application/wasm"}
+	for _, s := range skippable {
+		if strings.Contains(ct, s) {
+			return true
+		}
+	}
+	return false
 }
 
-// GetCurrentHypothesis возвращает текущую гипотезу для хоста
-func (analyzer *GenkitSecurityAnalyzer) GetCurrentHypothesis(host string) *models.SecurityHypothesis {
-	return analyzer.hypothesisGen.GetCurrent(host)
+// storeInSiteMap stores an entry in the site map
+// NOTE: ID is generated by AddOrUpdateSiteMapEntry (not set here)
+// New architecture: Only stores ExchangeID reference + optional TrafficDigest
+// Raw HTTP data is accessed via InMemoryGraph.getExchange(ExchangeID)
+func (a *GenkitSecurityAnalyzer) storeInSiteMap(
+	method, url, id string,
+	reqHeaders, respHeaders map[string]string,
+	reqBody, respBody string,
+	statusCode int,
+	comment string,
+) string {
+	entry := models.SiteMapEntry{
+		// ID is auto-generated by AddOrUpdateSiteMapEntry
+		ExchangeID: id,
+		Method:     method,
+		URL:        url,
+		// Note: Comment field removed in new architecture
+		// Note: Request/Response fields removed - use ExchangeID to access from InMemoryGraph
+		// Note: Digest field is set separately by Architect agent
+	}
+
+	return a.graph.AddOrUpdateSiteMapEntry(&entry)
 }
 
-// GenerateHypothesisForHost принудительно генерирует гипотезу для хоста
-func (analyzer *GenkitSecurityAnalyzer) GenerateHypothesisForHost(host string) (*models.HypothesisResponse, error) {
-	return analyzer.hypothesisGen.GenerateForHost(host)
+// Close closes the analyzer and cleans up resources
+func (a *GenkitSecurityAnalyzer) Close() error {
+	// No async workers to clean up in new flow
+	log.Printf("🧹 Analyzer closed")
+	return nil
 }
 
-// GetAllHypotheses возвращает все гипотезы для всех хостов
-func (analyzer *GenkitSecurityAnalyzer) GetAllHypotheses() map[string]*models.SecurityHypothesis {
-	return analyzer.hypothesisGen.GetAll()
+// GetGraph returns the in-memory graph (for testing/debugging)
+func (a *GenkitSecurityAnalyzer) GetGraph() *models.InMemoryGraph {
+	return a.graph
 }
 
-// GetSiteContext возвращает контекст для хоста (для отладки)
-func (analyzer *GenkitSecurityAnalyzer) GetSiteContext(host string) *models.SiteContext {
-	return analyzer.contextManager.Get(host)
+// GetWsHub returns the WebSocket manager (for API server)
+func (a *GenkitSecurityAnalyzer) GetWsHub() *websocket.WebsocketManager {
+	return a.wsHub
+}
+
+const (
+	maxResponseSize = 1_000_000 // 1MB max response size
+)
+
+// prepareExchangeForLLM creates a copy of exchange with truncated bodies for LLM analysis
+// This prevents sending large binary data (images, videos, etc.) to the LLM
+// Delegates to llm.PrepareExchangeForLLM for consistency with tool handler
+func (a *GenkitSecurityAnalyzer) prepareExchangeForLLM(exchange models.HTTPExchange) models.HTTPExchange {
+	return llm.PrepareExchangeForLLM(exchange)
+}
+
+// convertSiteMapEntries converts []*models.SiteMapEntry to []models.SiteMapEntry
+// This is needed because GetAllSiteMapEntries returns pointers, but the LLM prompt expects values
+func convertSiteMapEntries(entries []*models.SiteMapEntry) []models.SiteMapEntry {
+	result := make([]models.SiteMapEntry, len(entries))
+	for i, entry := range entries {
+		result[i] = *entry
+	}
+	return result
 }

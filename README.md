@@ -1,310 +1,215 @@
-# 🛡️ Hackerecon
+# Hackerecon
 
-**Frontend** - [Frontend](https://github.com/BetterCallFirewall/Hackerecon-frontend)
+AI-powered security analysis assistant for penetration testing and bug bounty hunting.
 
-**AI-Powered HTTP Proxy для автоматизированного анализа безопасности веб-приложений**
+<p align="center">
+  <img src="https://img.shields.io/badge/Go-1.25+-00ADD8?style=flat&logo=go" alt="Go Version">
+  <img src="https://img.shields.io/badge/Genkit-1.0.5-FF6F00?style=flat" alt="Genkit Version">
+  <img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License">
+</p>
 
-Hackerecon — это интеллектуальный прокси-сервер, который использует большие языковые модели (LLM) для автоматического обнаружения уязвимостей в веб-приложениях. Система перехватывает трафик, анализирует его с помощью AI и генерирует структурированные отчёты о найденных проблемах безопасности.
+## Overview
 
----
+Hackerecon acts as a "second pilot" for security researchers, analyzing HTTP traffic in real-time to identify potential vulnerabilities. It's designed with a **human-in-the-loop** approach — the AI suggests observations and leads, but humans make decisions.
 
-## 🎯 Ключевые возможности
+**Key Principle**: This is an intelligent assistant, not an automated exploitation system.
 
-- 🔍 **Интеллектуальный анализ** — LLM анализирует HTTP трафик на наличие уязвимостей
-- ⚡ **Двухэтапная оптимизация** — быстрая оценка + полный анализ только важных endpoint'ов
-- 🧠 **Контекстное понимание** — накопление знаний о структуре и технологиях целевого сайта
-- 🎯 **Генерация гипотез** — автоматическое формулирование главных векторов атаки
-- 🔌 **Универсальная LLM поддержка** — работает с Gemini, Ollama, LM Studio, OpenAI-compatible API
-- 🔄 **Интеграция с Burp Suite** — опциональная пересылка трафика через Burp
-- 📊 **REST API + WebSocket** — интеграция с фронтендом для real-time обновлений
-- 💾 **Умное кэширование** — сокращение нагрузки на LLM
----
+**Architecture**: Fully client-side application with no centralized server. All processing happens locally on your machine.
 
-## 🚀 Быстрый старт
+## Features
 
-### Требования
+- 🔍 **Real-time HTTP Traffic Analysis** — Intercepts and analyzes HTTP traffic via Burp Suite integration
+- 🤖 **4-Phase Agent Pipeline** — Specialized AI agents for different analysis tasks
+- 🎯 **Smart Filtering** — 60-70% reduction in LLM calls via heuristic filtering
+- 📊 **System Architecture Reconstruction** — Automatically maps application structure
+- 🔗 **Connection Discovery** — Finds relationships between security observations
+- 📝 **PoC Generation** — Generates proof-of-concept payloads for discovered leads
+- 🌐 **Real-time Dashboard** — WebSocket-based live updates
 
-- Go 1.25 или выше
-- LLM провайдер (Gemini / Ollama / LM Studio / др.)
+## Architecture
 
-### Установка
+### 4-Phase Agent Pipeline
+
+```
+Per-Request (Fast Model):
+HTTP Request → Request Filter (heuristic, NO LLM) → 60-70% skip rate
+    ↓
+Store Exchange → InMemoryGraph (thread-safe storage)
+    ↓
+PHASE 1: Analyst (per-request, fast LLM)
+    → Raw Observations[] + TrafficDigest
+    ↓
+[Manual Trigger] Deep Analysis Pipeline (Smart Model):
+    ↓
+PHASE 2: Architect (on raw buffer + site map)
+    → SystemArchitecture (TechStack + DataFlows)
+    ↓
+PHASE 3: Strategist (raw obs + architecture)
+    → Aggregated Observations[] + Connections[] + TacticianTasks[]
+    ↓
+PHASE 4: Tactician (parallel per task, with tools)
+    → Leads[] with PoCs
+    ↓
+WebSocket Broadcast → Dashboard
+```
+
+### Agent Roles
+
+| Agent | Model | Purpose |
+|-------|-------|---------|
+| **Analyst** | Fast (e.g., gemini-1.5-flash) | Per-request analysis, extracts raw observations and traffic digests |
+| **Architect** | Smart (e.g., gemini-1.5-pro) | Reconstructs system architecture from collected digests |
+| **Strategist** | Smart | Aggregates observations, finds patterns, generates tasks |
+| **Tactician** | Smart + Tools | Generates actionable leads with PoCs (parallel execution) |
+
+## Quick Start
+
+### Prerequisites
+
+- Go 1.25+
+- Burp Suite (for traffic interception)
+- API key for LLM provider (Gemini, OpenAI, or compatible)
+
+### Installation
 
 ```bash
-# Клонирование репозитория
+# Clone the repository
 git clone https://github.com/BetterCallFirewall/Hackerecon.git
 cd Hackerecon
 
-# Установка зависимостей
-go mod download
+# Install dependencies
+go mod tidy
 
-# Создание .env файла
-cp .env.example .env
+# Build
+go build -o hackerecon cmd/main.go
 ```
 
-### Конфигурация
+### Configuration
 
-Отредактируйте `.env` файл:
+Create a `.env` file in the project root:
 
 ```bash
-# Основные настройки прокси
-PROXY_LISTEN_ADDR=:8080
-PROXY_CERT_FILE=./certs/ca.crt
+# LLM Provider (gemini or generic/openai/ollama/localai/lm-studio)
+LLM_PROVIDER=gemini
+
+# LLM Models (both required)
+LLM_MODEL_FAST=gemini-1.5-flash    # For Analyst (per-request)
+LLM_MODEL_SMART=gemini-1.5-pro     # For Architect, Strategist, Tactician
+
+# API Key
+API_KEY=your-api-key
+
+# For generic provider (OpenAI-compatible)
+# LLM_BASE_URL=https://api.example.com
+# LLM_FORMAT=openai
+
+# Application
 PORT=8090
 
-# LLM провайдер (вариант 1: Gemini)
-LLM_PROVIDER=gemini
-LLM_MODEL=gemini-1.5-pro
-API_KEY=your-google-api-key
-
-# LLM провайдер (вариант 2: Ollama - локально)
-# LLM_PROVIDER=generic
-# LLM_FORMAT=ollama
-# LLM_BASE_URL=http://localhost:11434
-# LLM_MODEL=llama3.1:8b
-
-# Интеграция с Burp Suite (опционально)
-BURP_HOST=127.0.0.1
+# Burp Suite Integration
+BURP_HOST=localhost
 BURP_PORT=8080
 ```
 
-### Запуск
+### Running
 
 ```bash
-go mod tidy
-
-# Или напрямую через Go
-go run cmd/main.go cmd/api.go
-```
-
-После запуска:
-- 🌐 **HTTP Proxy**: `http://localhost:8080`
-- 🔒 **HTTPS Proxy**: `https://localhost:8443`
-- 📡 **REST API**: `http://localhost:8081`
-- 🔌 **WebSocket**: `ws://localhost:8081/ws`
-
-Установка и запуск Frontend подробно описан в репозитории фронтенда
-
----
-
-## 📋 Использование
-
-### 1. Настройка браузера
-
-Настройте прокси в браузере или Burp Suite:
-- **Proxy**: `localhost:8090`
-
-### 2. Перехват трафика
-
-Просто используйте браузер как обычно. Hackerecon автоматически:
-- ✅ Перехватывает запросы
-- ✅ Фильтрует статические ресурсы (css, js, images)
-- ✅ Анализирует API endpoints и бизнес-логику
-- ✅ Обнаруживает уязвимости в реальном времени
-
-## 🏗️ Архитектура
-
-### Двухэтапный анализ
-
-```
-┌──────────────────┐
-│  HTTP Request    │
-└────────┬─────────┘
-         │
-         ▼
-┌──────────────────┐
-│ Request Filter   │ ◄── Фильтрация статики (70-90% отсеяно)
-└────────┬─────────┘
-         │
-         ▼
-┌──────────────────┐
-│ URL Normalizer   │ ◄── /profile/123 → /profile/{id}
-└────────┬─────────┘
-         │
-         ▼
-┌──────────────────┐
-│  Cache Check     │ ◄── Проверка кэша
-└────────┬─────────┘
-         │
-         ▼
-┌─────────────────────────┐
-│ Этап 1: URL Analysis    │ ◄── Быстрая оценка (~1 сек)
-│ - Suspicious?           │
-│ - Confidence            │
-│ - Should analyze?       │
-└────────┬────────────────┘
-         │
-         ▼
-┌─────────────────────────┐
-│ Этап 2: Full Analysis   │ ◄── Полный анализ (~5 сек)
-│ - Vulnerability types   │     Только для важных URL
-│ - Risk level            │
-│ - Security checklist    │
-└────────┬────────────────┘
-         │
-         ▼
-┌──────────────────┐
-│  Report + WS     │ ◄── Отчёт + WebSocket уведомление
-└──────────────────┘
-```
-
-### Компоненты
-
-- **SecurityProxyWithGenkit** — главный прокси-сервер
-- **GenkitSecurityAnalyzer** — AI анализатор безопасности
-- **RequestFilter** — умная фильтрация запросов
-- **AnalysisCache** — кэширование результатов
-- **SiteContextManager** — управление контекстом сайтов
-- **TechDetector** — обнаружение технологий
-- **HypothesisGenerator** — генерация гипотез об уязвимостях
-- **WebsocketManager** — real-time уведомления
-
----
-
-## 🎯 Обнаруживаемые уязвимости
-
-Hackerecon использует AI для обнаружения широкого спектра уязвимостей:
-
-- 🔴 **SQL Injection** — внедрение SQL кода
-- 🔴 **XSS** (Reflected, Stored, DOM-based) — межсайтовый скриптинг
-- 🔴 **IDOR** — небезопасные прямые ссылки на объекты
-- 🟠 **Authentication Bypass** — обход аутентификации
-- 🟠 **Privilege Escalation** — повышение привилегий (вертикальное/горизонтальное)
-- 🟠 **SSRF** — серверные запросы от имени сервера
-- 🟡 **Path Traversal** — обход директорий
-- 🟡 **Information Disclosure** — утечка информации
-- 🟡 **Broken Access Control** — нарушение контроля доступа
-- 🟡 **CSRF** — межсайтовая подделка запроса
-- 🔵 **Security Misconfiguration** — небезопасная конфигурация
-- 🔵 **Sensitive Data Exposure** — раскрытие чувствительных данных
-
-## 🧪 Пример вывода
-
-### Vulnerability Report
-
-```json
-{
-  "id": "vuln_12345",
-  "timestamp": "2024-01-15T10:30:00Z",
-  "analysis_result": {
-    "has_vulnerability": true,
-    "risk_level": "high",
-    "vulnerability_types": ["SQL Injection", "Information Disclosure"],
-    "ai_comment": "Обнаружена потенциальная SQL-инъекция в параметре 'id'. База данных PostgreSQL возвращает подробные сообщения об ошибках, что подтверждает уязвимость.",
-    "confidence_score": 0.85,
-    "security_checklist": [
-      {
-        "action": "Тест SQL инъекции",
-        "description": "Попробуйте добавить одинарную кавычку в параметр id",
-        "expected": "Ошибка парсинга SQL или изменение поведения"
-      }
-    ],
-    "identified_user_role": "authenticated_user",
-    "extracted_secrets": [
-      {
-        "type": "database_error",
-        "value": "pq: syntax error at or near...",
-        "confidence": 0.9
-      }
-    ]
-  }
-}
-```
-
-### Security Hypothesis
-
-```json
-{
-  "id": "hyp_001",
-  "title": "Vertical Privilege Escalation via API",
-  "description": "Админские endpoints доступны обычным пользователям без проверки ролей",
-  "attack_vector": "Privilege Escalation",
-  "target_urls": ["/api/v1/admin/users", "/api/v1/admin/settings"],
-  "attack_sequence": [
-    {
-      "step": 1,
-      "action": "Аутентифицироваться как обычный user",
-      "expected": "JWT токен с role='user'"
-    },
-    {
-      "step": 2,
-      "action": "Запрос к /api/v1/admin/users с user токеном",
-      "expected": "200 OK (уязвимость) или 403 Forbidden (защищено)"
-    }
-  ],
-  "confidence": 0.85,
-  "impact": "critical",
-  "effort": "low"
-}
-```
-
----
-
-## 🛠️ Разработка
-
-### Структура проекта
-
-```
-Hackerecon/
-├── cmd/                    # Точки входа
-│   ├── main.go            # Главный сервер (прокси + анализ)
-│   └── api.go             # REST API сервер
-├── internal/
-│   ├── config/            # Конфигурация
-│   ├── driven/            # Прокси и анализатор
-│   │   ├── analyzer.go    # AI анализатор безопасности
-│   │   ├── http.go        # HTTP/HTTPS прокси
-│   │   ├── hypothesis.go  # Генерация гипотез
-│   │   ├── cache.go       # Кэширование
-│   │   └── ...
-│   ├── llm/               # LLM интеграция
-│   │   ├── provider.go    # Интерфейс провайдера
-│   │   ├── generic.go     # Универсальный HTTP провайдер
-│   │   ├── gemini.go      # Gemini провайдер
-│   │   └── prompt.go      # Промпты для LLM
-│   ├── models/            # Модели данных
-│   │   ├── vulnerabilities.go
-│   │   ├── site_context.go
-│   │   └── ...
-│   ├── utils/             # Утилиты
-│   │   ├── request_filter.go
-│   │   ├── url_normalizer.go
-│   │   └── tech_detector.go
-│   └── websocket/         # WebSocket hub
-|   └── cert/              # работа с сертификатами для HTTPS
-└── docs/                  # Документация
-└── pkg/                   # Файлы genkit для интеграции LLM
-```
-
-### Сборка
-```bash
-go mod tidy
+# Run the application
 go run cmd/main.go
+
+# Or run with Genkit Dev UI (for flow inspection)
+genkit start -- go run cmd/main.go
 ```
 
----
+## API Endpoints
 
-## 🤝 Вклад в проект
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/ws` | GET | WebSocket for live updates |
+| `/health` | GET | Health check |
+| `/api/analyze-deep` | POST | Triggers deep analysis (Phases 2-4) |
 
-Мы приветствуем вклад в развитие проекта! Для того, чтобы внести изменения и оставите часть своего кода, пожалуйста:
+## Project Structure
 
-1. Форкните репозиторий
-2. Создайте feature branch (`git checkout -b feature/AmazingFeature`)
-3. Закоммитьте изменения (`git commit -m 'Add some AmazingFeature'`)
-4. Запушьте в branch (`git push origin feature/AmazingFeature`)
-5. Откройте Pull Request
+```
+cmd/
+├── main.go                    # Entry point
+└── api.go                     # REST API server
 
----
+internal/
+├── config/                    # Environment-based configuration
+├── driven/
+│   ├── analyzer.go            # 4-phase orchestration (core)
+│   ├── burp_integration.go    # Burp Suite proxy integration
+│   └── ...
+├── llm/
+│   ├── analyst_flow.go        # Phase 1: Analyst agent
+│   ├── architect_flow.go      # Phase 2: Architect agent
+│   ├── strategist_flow.go     # Phase 3: Strategist agent
+│   ├── tactician_flow.go      # Phase 4: Tactician agent
+│   ├── lead_flow.go           # Tool definitions (getExchange)
+│   └── *_prompt.go            # Agent prompts
+├── models/
+│   ├── detective.go           # Core entities (Observation, Lead, etc.)
+│   └── storage.go             # InMemoryGraph (thread-safe storage)
+├── utils/
+│   └── request_filter.go      # Heuristic filtering
+├── websocket/
+│   └── hub.go                 # WebSocket manager
+└── limits/
+    └── limits.go              # Rate limiting
+```
 
-## 🔒 Безопасность
+## Core Concepts
 
-**⚠️ ВАЖНО**: Этот инструмент предназначен **исключительно для легального тестирования безопасности** приложений, на которые у вас есть разрешение. Использование для несанкционированного доступа к системам является **незаконным**.
+### Entities
 
----
+- **HTTPExchange** — Complete HTTP request-response pair
+- **Observation** — Security-relevant fact (what, where, why)
+- **TrafficDigest** — Token-efficient summary of an exchange
+- **Lead** — Actionable security finding with PoCs
+- **Connection** — Relationship between entities
+- **SystemArchitecture** — Reconstructed tech stack and data flows
 
-## 🗺️ Roadmap
+### Request Filtering
 
-- [ ] Интеграция с популярными vulnerability databases (CVE, OWASP)
-- [ ] Использование нескольких LLM для создания разных агентов
-- [ ] Добавление возможности использовать существующие утилиты (nmap, sqlmap, etc.)
-- [ ] Docker образ для быстрого развертывания
-- [ ] Добавление чата для интерактивного взаимодействия с LLM
+Heuristic filtering skips 60-70% of traffic:
+- Static assets (`.js`, `.png`, `.jpg`, etc.)
+- Health checks and monitoring endpoints
+- 4xx error responses
+- Large responses (>1MB)
+- Binary content types (images, video, audio, fonts)
+
+> **Note**: `.css` files are NOT filtered — they can contain sensitive paths/comments
+
+## Development
+
+```bash
+# Run tests
+go test ./...
+
+# Run specific package tests
+go test ./internal/utils -v
+go test ./internal/llm -v
+
+# Run specific test
+go test -run TestURLNormalizer ./internal/utils
+```
+
+## Security Notice
+
+This tool is designed for **legitimate security testing** only:
+- Authorized penetration testing
+- Security research and education
+- Vulnerability assessment of your own applications
+- Defensive security analysis
+
+**Only use on systems you own or have explicit permission to test.**
+
+## License
+
+MIT License
+
+## Contributing
+
+Contributions are welcome! Please read the contributing guidelines before submitting a pull request.

@@ -1,16 +1,18 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
-	"strings"
+	"time"
 
 	"github.com/BetterCallFirewall/Hackerecon/internal/driven"
-	"github.com/BetterCallFirewall/Hackerecon/internal/models"
 )
 
 // StartAPIServer запускает REST API сервер для взаимодействия с анализатором
+// Detective flow simplified version - removed /api/hypothesis endpoint
+// Hypotheses are now automatically generated as Leads during analysis
 func StartAPIServer(analyzer *driven.GenkitSecurityAnalyzer) {
 	// CORS middleware для разрешения cross-origin запросов с фронтенда
 	corsMiddleware := func(next http.HandlerFunc) http.HandlerFunc {
@@ -29,57 +31,9 @@ func StartAPIServer(analyzer *driven.GenkitSecurityAnalyzer) {
 		}
 	}
 
-	// Единственная REST API ручка: генерация гипотезы с tech stack
-	// POST /api/hypothesis/{host} - принудительно сгенерировать новую гипотезу
-	http.HandleFunc("/api/hypothesis/", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-
-		if r.Method != "POST" {
-			http.Error(w, `{"error": "only POST method allowed"}`, http.StatusMethodNotAllowed)
-			return
-		}
-
-		// Извлекаем host из пути: /api/hypothesis/{host}
-		pathParts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-		if len(pathParts) < 3 {
-			http.Error(w, `{"error": "host parameter is required"}`, http.StatusBadRequest)
-			return
-		}
-
-		host := pathParts[2]
-
-		// Принудительно сгенерировать новую гипотезу (синхронный вызов LLM)
-		hypothesisResp, err := analyzer.GenerateHypothesisForHost(host)
-		if err != nil {
-			log.Printf("❌ Failed to generate hypothesis for %s: %v", host, err)
-			http.Error(w, `{"error": "`+err.Error()+`"}`, http.StatusInternalServerError)
-			return
-		}
-
-		// Получаем tech stack из контекста
-		siteContext := analyzer.GetSiteContext(host)
-		var techStack *models.TechStack
-		if siteContext != nil {
-			techStack = siteContext.TechStack
-		}
-
-		// Формируем DTO с векторами атаки и tech stack
-		dto := models.HypothesisDTO{
-			Type: "hypothesis",
-			Data: &models.HypothesisData{
-				AttackVectors:  hypothesisResp.AttackVectors,
-				MainHypothesis: hypothesisResp.MainHypothesis,
-				TechStack:      techStack,
-				// Старый формат для обратной совместимости
-				Hypothesis: hypothesisResp.MainHypothesis,
-			},
-		}
-
-		json.NewEncoder(w).Encode(dto)
-	}))
-
 	// WebSocket endpoint для live-обновлений результатов анализа
-	http.HandleFunc("/ws", analyzer.WsHub.ServeHTTP)
+	// detective_analysis_complete messages are sent automatically
+	http.HandleFunc("/ws", analyzer.GetWsHub().ServeHTTP)
 
 	// Health check endpoint
 	http.HandleFunc("/health", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
@@ -87,15 +41,41 @@ func StartAPIServer(analyzer *driven.GenkitSecurityAnalyzer) {
 		json.NewEncoder(w).Encode(map[string]string{
 			"status":  "ok",
 			"service": "hackerecon-api",
+			"flow":    "3-phase", // 3-phase agent flow
+		})
+	}))
+
+	// Deep analysis endpoint - triggers Strategist + Tactician pipeline
+	http.HandleFunc("/api/analyze-deep", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		log.Printf("📨 Received deep analysis request")
+
+		// Run deep analysis asynchronously with independent context (don't block HTTP response)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+			if err := analyzer.RunDeepAnalysis(ctx); err != nil {
+				log.Printf("❌ Deep analysis failed: %v", err)
+			}
+		}()
+
+		// Return immediately
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"status": "started",
 		})
 	}))
 
 	// Запуск сервера
 	log.Println("📊 API Server запущен на http://localhost:8081")
 	log.Println("📡 Доступные endpoints:")
-	log.Println("   POST /api/hypothesis/{host}        - Сгенерировать гипотезу с tech stack")
-	log.Println("   WS   /ws                           - WebSocket для live обновлений анализа")
+	log.Println("   WS   /ws                           - WebSocket для live обновлений анализа (3-phase flow)")
 	log.Println("   GET  /health                       - Health check")
+	log.Println("   POST /api/analyze-deep             - Trigger deep analysis (Strategist + Tactician)")
 
 	log.Fatal(http.ListenAndServe(":8081", nil))
 }

@@ -1,3 +1,7 @@
 .idea
 .env
-env
+env.DS_Store
+*.log
+logs.txt
+result.txt
+.genkit/
